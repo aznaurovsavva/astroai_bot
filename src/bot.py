@@ -13,9 +13,9 @@ logging.basicConfig(
 log = logging.getLogger("astro-num-bot")
 
 # --- Цены в Stars (XTR). Эквиваленты в тексте описания. ---
-PRICE_NUM   = 200   # ~200 ₽
-PRICE_PALM  = 300   # ~300 ₽
-PRICE_NATAL = 500   # ~500 ₽
+PRICE_NUM   = 40   # ~200 ₽
+PRICE_PALM  = 60   # ~300 ₽
+PRICE_NATAL = 100   # ~500 ₽
 
 # Главное меню с оплатой
 MENU = [
