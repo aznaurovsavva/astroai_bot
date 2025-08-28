@@ -17,16 +17,16 @@ PRICE_NUM   = 90   # ~200 ₽
 PRICE_PALM  = 130   # ~300 ₽
 PRICE_NATAL = 220   # ~500 ₽
 
-# Главное меню с оплатой
+# Главное меню без слова "оплатить"
 MENU = [
-    [InlineKeyboardButton("🔢 Нумерология — оплатить", callback_data="buy_num")],
-    [InlineKeyboardButton("🪬 Хиромантия — оплатить", callback_data="buy_palm")],
-    [InlineKeyboardButton("🌌 Наталка PRO — оплатить", callback_data="buy_natal")],
+    [InlineKeyboardButton("🔢 Нумерология", callback_data="num")],
+    [InlineKeyboardButton("🪬 Хиромантия", callback_data="palm")],
+    [InlineKeyboardButton("🌌 Наталка PRO", callback_data="natal")],
 ]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я делаю астрологические и нумерологические разборы 🔮\nВыбери услугу для оплаты:",
+        "✨ Добро пожаловать в AstroAi ✨\n\nЯ — твой личный проводник в мир звёзд, чисел и линий судьбы.\n\nЗдесь ты можешь:\n🔢 Получить нумерологический разбор по дате рождения\n🪬 Заглянуть в тайны своей ладони через хиромантию\n🌌 Узнать астрологическую натальную карту с домами и аспектами\n\nВыбери направление, которое откликается тебе прямо сейчас:",
         reply_markup=InlineKeyboardMarkup(MENU),
     )
 
@@ -62,7 +62,31 @@ async def send_stars_invoice(
 async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    if q.data == "buy_num":
+    if q.data == "num":
+        await q.edit_message_text(
+            "🔢 *Нумерология*\n\nЧисла несут уникальный код твоей личности. Разбор покажет сильные и слабые стороны, предназначение и кармические уроки.\n\nСтоимость: 90 ⭐ (≈200 ₽)",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Оплатить 90 ⭐", callback_data="buy_num")]
+            ]),
+            parse_mode="Markdown"
+        )
+    elif q.data == "palm":
+        await q.edit_message_text(
+            "🪬 *Хиромантия*\n\nЛинии на ладони — это твой живой дневник судьбы. Разбор по фото покажет таланты, вызовы и внутренний потенциал.\n\nСтоимость: 130 ⭐ (≈300 ₽)",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Оплатить 130 ⭐", callback_data="buy_palm")]
+            ]),
+            parse_mode="Markdown"
+        )
+    elif q.data == "natal":
+        await q.edit_message_text(
+            "🌌 *Наталка PRO*\n\nПолный астрологический разбор: планеты, дома и аспекты, усиленный нумерологией. Это как персональная карта Вселенной для твоей жизни.\n\nСтоимость: 220 ⭐ (≈500 ₽)",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Оплатить 220 ⭐", callback_data="buy_natal")]
+            ]),
+            parse_mode="Markdown"
+        )
+    elif q.data == "buy_num":
         await send_stars_invoice(
             q, context,
             "Нумерология",
@@ -84,7 +108,7 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "NATAL_500", PRICE_NATAL
         )
     else:
-        await q.edit_message_text("Выбирай услугу для оплаты ⤴️")
+        await q.edit_message_text("Выбирай услугу ⤴️")
 
 # Обязательный pre-checkout (здесь можно вставить валидации)
 async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
