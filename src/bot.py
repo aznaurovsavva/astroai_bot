@@ -17,9 +17,29 @@ PRICE_NUM   = 90   # ~200 ₽
 PRICE_PALM  = 130   # ~300 ₽
 PRICE_NATAL = 220   # ~500 ₽
 
-IMG_NUM = "https://source.unsplash.com/featured/1200x800/?numbers,geometry"
-IMG_PALM = "https://source.unsplash.com/featured/1200x800/?palm,hand"
-IMG_NATAL = "https://source.unsplash.com/featured/1200x800/?night,stars,astrology"
+IMG_NUM = "https://picsum.photos/seed/numerology/1200/800"
+IMG_PALM = "https://picsum.photos/seed/palmistry/1200/800"
+IMG_NATAL = "https://picsum.photos/seed/astrology/1200/800"
+
+async def send_service_card(q, photo_url: str, caption: str, buy_cbdata: str, buy_label: str):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(buy_label, callback_data=buy_cbdata)],
+        [InlineKeyboardButton("← Назад", callback_data="back_home")],
+    ])
+    try:
+        await q.message.reply_photo(
+            photo=photo_url,
+            caption=caption,
+            reply_markup=kb,
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        # Fallback: если фото не загрузилось (например, Telegram не достал URL)
+        try:
+            await q.edit_message_text(caption, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            # Последняя попытка: отправим новым сообщением без фото
+            await q.message.chat.send_message(caption, reply_markup=kb, parse_mode="Markdown")
 
 # Главное меню без слова "оплатить"
 MENU = [
@@ -94,15 +114,7 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Рекомендации на месяц.\n\n"
             "Стоимость: *90 ⭐* (≈ 200 ₽)."
         )
-        await q.message.reply_photo(
-            photo=IMG_NUM,
-            caption=caption_num,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Оплатить 90 ⭐", callback_data="buy_num")],
-                [InlineKeyboardButton("← Назад", callback_data="back_home")],
-            ]),
-            parse_mode="Markdown",
-        )
+        await send_service_card(q, IMG_NUM, caption_num, "buy_num", "Оплатить 90 ⭐")
     elif q.data == "palm":
         caption_palm = (
             "🪬 *Хиромантия*\n\n"
@@ -111,15 +123,7 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Что ты получишь: образный разбор на 3–5 абзацев + практические советы.\n\n"
             "Стоимость: *130 ⭐* (≈ 300 ₽)."
         )
-        await q.message.reply_photo(
-            photo=IMG_PALM,
-            caption=caption_palm,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Оплатить 130 ⭐", callback_data="buy_palm")],
-                [InlineKeyboardButton("← Назад", callback_data="back_home")],
-            ]),
-            parse_mode="Markdown",
-        )
+        await send_service_card(q, IMG_PALM, caption_palm, "buy_palm", "Оплатить 130 ⭐")
     elif q.data == "natal":
         caption_natal = (
             "🌌 *Наталка PRO*\n\n"
@@ -128,15 +132,7 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Результат: структурированный текст 6–10 абзацев.\n\n"
             "Стоимость: *220 ⭐* (≈ 500 ₽)."
         )
-        await q.message.reply_photo(
-            photo=IMG_NATAL,
-            caption=caption_natal,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Оплатить 220 ⭐", callback_data="buy_natal")],
-                [InlineKeyboardButton("← Назад", callback_data="back_home")],
-            ]),
-            parse_mode="Markdown",
-        )
+        await send_service_card(q, IMG_NATAL, caption_natal, "buy_natal", "Оплатить 220 ⭐")
     elif q.data == "back_home":
         try:
             await q.message.delete()
