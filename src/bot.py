@@ -161,6 +161,8 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• *Натальная карта Pro* — комплексный астрологический разбор: планеты, дома, аспекты + нумерология.\n\n"
             "Выберите направление ниже, и мы подготовим для вас персональный разбор с рекомендациями."
         )
+        if TEST_MODE:
+            intro += "\n\n_Сейчас включён тестовый режим: оплата отключена, доступ выдаётся для проверки флоу._"
         await q.message.chat.send_message(
             intro,
             reply_markup=InlineKeyboardMarkup(MENU),
