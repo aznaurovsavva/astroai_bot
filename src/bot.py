@@ -7,7 +7,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ContextTypes, PreCheckoutQueryHandler, MessageHandler, filters
 )
-from .config import BOT_TOKEN, TEST_MODE
+from .config import BOT_TOKEN, TEST_MODE, ADMIN_ID
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -94,6 +94,22 @@ def update_order(order_id: int, *, status: str | None = None, meta_merge: dict |
   cur.execute(f"UPDATE orders SET {', '.join(sets)} WHERE id=?", params)
   con.commit(); con.close()
 
+# --- Helper to fetch recent orders ---
+def fetch_last_orders(limit: int = 5):
+    con = _conn(); cur = con.cursor()
+    cur.execute(
+        """
+        SELECT id, user_id, payload, amount_stars, status, charge_id, created_at
+        FROM orders
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,)
+    )
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
 # --- Цены в Stars (XTR). Эквиваленты в тексте описания. ---
 PRICE_NUM   = 90   # ~200 ₽
 PRICE_PALM  = 130   # ~300 ₽
@@ -173,6 +189,32 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if TEST_MODE:
         intro += "\n\n_Сейчас включён тестовый режим: оплата отключена, доступ выдаётся для проверки флоу._"
     await update.message.reply_text(intro, reply_markup=InlineKeyboardMarkup(MENU), parse_mode="Markdown")
+
+
+# --- Admin command: show last orders ---
+async def orders_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    if ADMIN_ID and u.id != ADMIN_ID:
+        await update.message.reply_text("Недостаточно прав.")
+        return
+
+    # поддержка необязательного аргумента количества: /orders_last 10
+    try:
+        limit = int(context.args[0]) if context.args else 5
+        limit = max(1, min(limit, 50))
+    except Exception:
+        limit = 5
+
+    rows = fetch_last_orders(limit=limit)
+    if not rows:
+        await update.message.reply_text("Пока заказов нет.")
+        return
+
+    lines = ["Последние заказы:"]
+    for (oid, uid, payload, amount, status, charge, created) in rows:
+        date = created.split('T')[0] if created else ""
+        lines.append(f"• #{oid} | user:{uid} | {payload} {amount}⭐ | {status} | {date}")
+    await update.message.reply_text("\n".join(lines))
 
 # Универсальная отправка инвойса в Stars
 async def send_stars_invoice(
@@ -477,6 +519,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("orders_last", orders_last))
     app.add_handler(CallbackQueryHandler(on_menu))
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
