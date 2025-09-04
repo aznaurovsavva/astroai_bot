@@ -175,24 +175,46 @@ def build_user_prompt_for_numerology(input_payload: dict) -> str:
     "pythagoras_ext:\n" + json.dumps(input_payload.get('pythagoras_ext', {}), ensure_ascii=False) + "\n"
   )
 
-async def _openai_chat_completion(messages: list, *, model: str = "gpt-5-thinking", temperature: float = 0.6, top_p: float = 0.9, max_tokens: int = 1800) -> dict:
-    """Call OpenAI Chat Completions API in a thread (requests is blocking)."""
+async def _openai_chat_completion(messages: list, *, temperature: float = 0.6, top_p: float = 0.9, max_tokens: int = 1400) -> dict:
+    """Call OpenAI Chat Completions API with JSON-only response and model fallbacks."""
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "temperature": temperature,
-        "top_p": top_p,
-        "max_tokens": max_tokens,
-        "messages": messages,
-    }
-    def _post():
-        return requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
-    resp = await asyncio.to_thread(_post)
-    resp.raise_for_status()
-    return resp.json()
+
+    # Prefer lightweight models that доступны на free-tier; при ошибке пробуем следующую
+    model_candidates = [
+        "gpt-5-mini",
+        "gpt-4.1-mini",
+    ]
+
+    last_err_text = ""
+    for model in model_candidates:
+        payload = {
+            "model": model,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "messages": messages,
+            # Форсируем строгий JSON-ответ
+            "response_format": {"type": "json_object"},
+        }
+
+        def _post():
+            return requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+
+        resp = await asyncio.to_thread(_post)
+        if resp.status_code // 100 == 2:
+            return resp.json()
+        else:
+            try:
+                last_err_text = resp.text
+            except Exception:
+                last_err_text = f"HTTP {resp.status_code}"
+            log.warning("OpenAI error on model %s: %s", model, last_err_text)
+            # попробуем следующую модель
+
+    raise RuntimeError(f"OpenAI all candidates failed. Last: {last_err_text}")
 
 def _try_parse_json_from_text(text: str) -> dict:
     try:
@@ -287,7 +309,15 @@ async def generate_and_send_numerology_report(update: Update, context: ContextTy
         await update.message.reply_text(md, parse_mode="Markdown")
     except Exception as e:
         log.exception("LLM error: %s", e)
-        await update.message.reply_text("Во время генерации отчёта произошла ошибка. Мы всё поправим и пришлём позже.")
+        # если пишет админ — покажем тех. причину
+        try:
+            is_admin = ADMIN_ID and update.effective_user and str(update.effective_user.id) == str(ADMIN_ID)
+        except Exception:
+            is_admin = False
+        if is_admin:
+            await update.message.reply_text(f"LLM error: {e}")
+        else:
+            await update.message.reply_text("Во время генерации отчёта произошла ошибка. Попробуем ещё раз чуть позже.")
 
 # --- Нумерология: расчёт числа судьбы + короткие трактовки ---
 NUM_DESCRIPTIONS = {
