@@ -426,17 +426,17 @@ def _render_report_html(report: dict) -> str:
                 total = escape(str(i.get('total','')))
                 tone = escape(str(i.get('tone','')))
                 comment = escape(str(i.get('comment','')))
-                lines.append(f"&bull; {axis}: {total} — {tone}. {comment}")
-            parts.append("<b>Линии и оси:</b><br>" + "<br>".join(lines))
+                lines.append(f"• {axis}: {total} — {tone}. {comment}")
+            parts.append("<b>Линии и оси:</b>\n" + "\n".join(lines))
 
     pr = report.get("practical_recs", {})
     if pr:
         if pr.get('week'):
             parts.append("")
-            parts.append("<b>Рекомендации на неделю:</b><br>" + "<br>".join(["&bull; " + escape(str(x)) for x in pr['week']]))
+            parts.append("<b>Рекомендации на неделю:</b>\n" + "\n".join(["• " + escape(str(x)) for x in pr['week']]))
         if pr.get('month'):
             parts.append("")
-            parts.append("<b>Рекомендации на месяц:</b><br>" + "<br>".join(["&bull; " + escape(str(x)) for x in pr['month']]))
+            parts.append("<b>Рекомендации на месяц:</b>\n" + "\n".join(["• " + escape(str(x)) for x in pr['month']]))
         if pr.get('focus_areas'):
             parts.append("")
             parts.append("<b>Фокусы:</b> " + escape(", ".join(map(str, pr['focus_areas']))))
@@ -444,7 +444,7 @@ def _render_report_html(report: dict) -> str:
     dn = report.get("data_notes") or []
     if dn:
         parts.append("")
-        parts.append("<i>Примечания к данным:</i><br>" + "<br>".join(["&bull; " + escape(str(x)) for x in dn]))
+        parts.append("<i>Примечания к данным:</i>\n" + "\n".join(["• " + escape(str(x)) for x in dn]))
 
     # Join with double breaks between sections
     html_text = "\n".join(parts)
