@@ -303,7 +303,12 @@ async def _llm_chat_completion(messages: list, *, temperature: float = 0.6, top_
             prompt_text = _format_messages_for_gemini(messages)
             payload = {
                 "contents": [{"parts": [{"text": prompt_text}]}],
-                "generationConfig": {"temperature": temperature, "topP": top_p, "maxOutputTokens": max_tokens},
+                "generationConfig": {
+                    "temperature": temperature,
+                    "topP": top_p,
+                    "maxOutputTokens": max_tokens,
+                    "responseMimeType": "application/json"
+                },
             }
             def _post():
                 return requests.post(url, headers=headers, params=params, data=json.dumps(payload), timeout=60)
@@ -337,18 +342,46 @@ async def _llm_chat_completion(messages: list, *, temperature: float = 0.6, top_
     raise RuntimeError(f"All LLM providers failed (OpenAI/Gemini/Mistral). Last: {last_error}")
 
 def _try_parse_json_from_text(text: str) -> dict:
-    try:
-        return json.loads(text)
-    except Exception:
-        # try to extract first JSON block
-        start = text.find('{'); end = text.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            snippet = text[start:end+1]
-            try:
-                return json.loads(snippet)
-            except Exception:
-                return {}
+    # Normalize whitespace and strip common wrappers (```json ... ```)
+    if not isinstance(text, str):
         return {}
+    t = text.strip().replace('\r', '')
+
+    # Remove leading fences like ```json or ```
+    if t.startswith('```'):
+        # drop first line (``` or ```json)
+        nl = t.find('\n')
+        if nl != -1:
+            t = t[nl+1:]
+        # drop trailing ``` if present
+        if t.endswith('```'):
+            t = t[:-3].strip()
+
+    # First attempt: direct JSON
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+
+    # Second: extract the largest { ... } span
+    start = t.find('{'); end = t.rfind('}')
+    snippet = None
+    if start != -1 and end != -1 and end > start:
+        snippet = t[start:end+1]
+        try:
+            return json.loads(snippet)
+        except Exception:
+            pass
+
+    # Third: try to remove trailing commas in simple cases
+    # (very conservative — only within top-level object)
+    try:
+        if snippet is not None:
+            cleaned = re.sub(r',\s*([}\]])', r'\1', snippet)
+            return json.loads(cleaned)
+    except Exception:
+        return {}
+    return {}
 
 def _render_report_markdown(report: dict) -> str:
     # Convert the returned JSON into a readable Telegram message
@@ -419,7 +452,17 @@ async def generate_and_send_numerology_report(update: Update, context: ContextTy
         content = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
         report = _try_parse_json_from_text(content)
         if not report:
-            await update.message.reply_text("Не удалось распарсить отчёт GPT. Попробуйте ещё раз позднее.")
+            # Show snippet to admin for debugging
+            try:
+                is_admin = ADMIN_ID and update.effective_user and str(update.effective_user.id) == str(ADMIN_ID)
+            except Exception:
+                is_admin = False
+            if is_admin:
+                snippet = (content or '')
+                if len(snippet) > 800:
+                    snippet = snippet[:800] + '…'
+                await update.message.reply_text("Parse error: LLM вернул не-JSON. Сниппет ответа:\n" + snippet)
+            await update.message.reply_text("Не удалось распарсить отчёт LLM. Попробуйте ещё раз позднее.")
             return
         # Save JSON to order meta
         if order_id:
