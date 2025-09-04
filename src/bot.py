@@ -197,13 +197,17 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     await update.message.reply_text(
-        f"your id: {u.id}\nADMIN_ID: {ADMIN_ID}\nTEST_MODE: {TEST_MODE}")
+        f"your id: {u.id}\nADMIN_ID: {ADMIN_ID} (type={type(ADMIN_ID).__name__})\nTEST_MODE: {TEST_MODE}")
 
 
 # --- Admin command: show last orders ---
 async def orders_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    if ADMIN_ID and u.id != ADMIN_ID:
+    try:
+        admin_id_val = int(ADMIN_ID)
+    except Exception:
+        admin_id_val = 0
+    if admin_id_val and int(u.id) != admin_id_val:
         await update.message.reply_text("Недостаточно прав.")
         return
 
