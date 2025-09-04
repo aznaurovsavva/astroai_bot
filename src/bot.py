@@ -146,21 +146,23 @@ SYSTEM_PROMPT = (
 )
 
 DEVELOPER_PROMPT = (
-    "Правила вывода: верните СТРОГО один JSON-объект со структурой:\n"
-    "{\n"
-    "  \"title\": str,\n"
-    "  \"summary\": str,\n"
-    "  \"life_path\": {\"value\": int, \"meaning\": str, \"strengths\": [str], \"risks\": [str], \"advice\": [str]},\n"
-    "  \"pythagoras_matrix\": {\n"
-    "    \"grid_text\": str,\n"
-    "    \"lines_overview\": [{\"axis\": str, \"total\": int, \"tone\": str, \"comment\": str}],\n"
-    "    \"digits\": [{\"digit\": int, \"count\": int, \"meaning\": str, \"advice\": str}],\n"
-    "    \"missing\": [int], \"dominant\": [int]\n"
-    "  },\n"
-    "  \"practical_recs\": {\"week\": [str], \"month\": [str], \"focus_areas\": [str]},\n"
-    "  \"data_notes\": [str]\n"
-    "}\n"
-    "Никаких пояснений вне JSON."
+    "Правила вывода: верните СТРОГО один JSON-объект ТОЛЬКО в теле ответа,\n"
+    "без markdown, без пояснений, без комментариев, без подсказок языка.\n"
+    "JSON должен быть МИНИФИЦИРОВАН (в одну строку, без пробелов и переносов),\n"
+    "чтобы исключить артефакты форматирования.\n"
+    "{"
+    "\"title\": str,"
+    "\"summary\": str,"
+    "\"life_path\":{\"value\":int,\"meaning\":str,\"strengths\":[str],\"risks\":[str],\"advice\":[str]},"
+    "\"pythagoras_matrix\":{"
+      "\"grid_text\": str,"
+      "\"lines_overview\":[{\"axis\":str,\"total\":int,\"tone\":str,\"comment\":str}],"
+      "\"digits\":[{\"digit\":int,\"count\":int,\"meaning\":str,\"advice\":str}],"
+      "\"missing\":[int],\"dominant\":[int]"
+    "},"
+    "\"practical_recs\":{\"week\":[str],\"month\":[str],\"focus_areas\":[str]},"
+    "\"data_notes\":[str]"
+    "}"
 )
 
 def build_user_prompt_for_numerology(input_payload: dict) -> str:
@@ -342,46 +344,45 @@ async def _llm_chat_completion(messages: list, *, temperature: float = 0.6, top_
     raise RuntimeError(f"All LLM providers failed (OpenAI/Gemini/Mistral). Last: {last_error}")
 
 def _try_parse_json_from_text(text: str) -> dict:
-    # Normalize whitespace and strip common wrappers (```json ... ```)
     if not isinstance(text, str):
         return {}
-    t = text.strip().replace('\r', '')
+    t = text.strip().replace("\r", "")
 
-    # Remove leading fences like ```json or ```
-    if t.startswith('```'):
-        # drop first line (``` or ```json)
-        nl = t.find('\n')
-        if nl != -1:
-            t = t[nl+1:]
-        # drop trailing ``` if present
-        if t.endswith('```'):
+    # Удаляем неразрывные пробелы и BOM
+    t = t.replace("\u00A0", " ").lstrip("\ufeff")
+
+    # Снимаем markdown-ограждения ```/```json
+    if t.startswith("```"):
+        first_nl = t.find("\n")
+        if first_nl != -1:
+            t = t[first_nl+1:]
+        if t.endswith("```"):
             t = t[:-3].strip()
 
-    # First attempt: direct JSON
+    # Вырезаем самый длинный блок {...}
+    start = t.find("{"); end = t.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        t = t[start:end+1].strip()
+
+    # Удаляем возможные комментарии
+    t = re.sub(r"//.*?$", "", t, flags=re.MULTILINE)
+    t = re.sub(r"/\*.*?\*/", "", t, flags=re.DOTALL)
+
+    # Убираем висячие запятые перед } или ]
+    t_clean = re.sub(r",\s*(?=[}\]])", "", t)
+
+    # Первая попытка
     try:
-        return json.loads(t)
+        return json.loads(t_clean)
     except Exception:
         pass
 
-    # Second: extract the largest { ... } span
-    start = t.find('{'); end = t.rfind('}')
-    snippet = None
-    if start != -1 and end != -1 and end > start:
-        snippet = t[start:end+1]
-        try:
-            return json.loads(snippet)
-        except Exception:
-            pass
-
-    # Third: try to remove trailing commas in simple cases
-    # (very conservative — only within top-level object)
+    # Попытка починить кавычки-ёлочки
+    t_qq = t_clean.replace("«", "\"").replace("»", "\"")
     try:
-        if snippet is not None:
-            cleaned = re.sub(r',\s*([}\]])', r'\1', snippet)
-            return json.loads(cleaned)
+        return json.loads(t_qq)
     except Exception:
         return {}
-    return {}
 
 def _render_report_markdown(report: dict) -> str:
     # Convert the returned JSON into a readable Telegram message
@@ -452,7 +453,13 @@ async def generate_and_send_numerology_report(update: Update, context: ContextTy
         content = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
         report = _try_parse_json_from_text(content)
         if not report:
-            # Show snippet to admin for debugging
+            # Сохраним сырой ответ в заказ для диагностики
+            if order_id:
+                try:
+                    update_order(order_id, meta_merge={"llm_raw": (content or "")[:4000]})
+                except Exception:
+                    pass
+            # Показать администратору сниппет
             try:
                 is_admin = ADMIN_ID and update.effective_user and str(update.effective_user.id) == str(ADMIN_ID)
             except Exception:
