@@ -158,6 +158,28 @@ def calc_life_path_ddmmyyyy(date_str: str) -> int:
         return n
     return reduce(s)
 
+# --- Нумерология: Матрица Пифагора (базовая по дате рождения) ---
+def pythagoras_counts(date_str: str) -> dict:
+    """Возвращает словарь {1..9: количество в дате рождения}. Нули не учитываются."""
+    counts = {i: 0 for i in range(1, 10)}
+    for ch in date_str:
+        if ch.isdigit():
+            d = int(ch)
+            if d != 0:
+                counts[d] += 1
+    return counts
+
+def render_pythagoras_grid(counts: dict) -> str:
+    """Формирует 3x3 сетку 1-4-7 / 2-5-8 / 3-6-9.
+    В каждой ячейке повторяем цифру столько раз, сколько встречается (или '—')."""
+    def cell(n: int) -> str:
+        c = counts.get(n, 0)
+        return (str(n) * c) if c > 0 else "—"
+    row1 = f"{cell(1):<7} | {cell(4):<7} | {cell(7):<7}"
+    row2 = f"{cell(2):<7} | {cell(5):<7} | {cell(8):<7}"
+    row3 = f"{cell(3):<7} | {cell(6):<7} | {cell(9):<7}"
+    return "\n".join([row1, row2, row3])
+
 
 async def send_service_text(q, caption: str, buy_cbdata: str, buy_label: str):
     kb = InlineKeyboardMarkup([
@@ -517,12 +539,17 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         life_path = calc_life_path_ddmmyyyy(dob_str)
         meaning = NUM_DESCRIPTIONS.get(life_path, "Личный путь и опыт через число судьбы.")
 
+        # Матрица Пифагора
+        counts = pythagoras_counts(dob_str)
+        grid_str = render_pythagoras_grid(counts)
+
         order_id = ud.get("order_id")
         if order_id:
             update_order(order_id, status="done", meta_merge={
                 "num_dob": dob_str,
                 "num_name": full_name,
                 "life_path": life_path,
+                "pythagoras_counts": counts,
             })
 
         ud["flow"] = None; ud["state"] = None
@@ -531,7 +558,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Имя: *{full_name}*\n"
             f"• Дата рождения: *{dob_str}*\n"
             f"• Число судьбы: *{life_path}* — {meaning}\n\n"
-            "Это краткая версия. Полный разбор с матрицей, кодами задач и рекомендациями добавим в ближайшее время.",
+            "Матрица Пифагора:\n"
+            "```\n" + grid_str + "\n```\n\n"
+            "Это краткая версия. Полный разбор с дополнительными показателями и рекомендациями добавим в ближайшее время.",
             parse_mode="Markdown",
         )
         return
