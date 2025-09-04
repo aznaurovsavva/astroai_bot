@@ -4,6 +4,7 @@ from datetime import datetime
 import os, json, sqlite3
 import asyncio
 import requests
+from html import escape
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -384,51 +385,70 @@ def _try_parse_json_from_text(text: str) -> dict:
     except Exception:
         return {}
 
-def _render_report_markdown(report: dict) -> str:
-    # Convert the returned JSON into a readable Telegram message
-    parts = []
+
+def _render_report_html(report: dict) -> str:
+    """Render LLM JSON report to HTML-safe text to avoid Telegram Markdown parse errors."""
+    parts: list[str] = []
+
     title = report.get("title")
     if title:
-        parts.append(f"*{title}*")
+        parts.append(f"<b>{escape(str(title))}</b>")
+
     summary = report.get("summary")
     if summary:
-        parts.append(summary)
+        parts.append(escape(str(summary)))
+
     lp = report.get("life_path", {})
     if lp:
         parts.append("")
-        parts.append(f"*Число судьбы:* {lp.get('value')} — {lp.get('meaning','')}")
+        lp_line = f"<b>Число судьбы:</b> {escape(str(lp.get('value')))} — {escape(lp.get('meaning',''))}"
+        parts.append(lp_line)
         if lp.get('strengths'):
-            parts.append("_Сильные стороны:_ " + ", ".join(lp['strengths']))
+            parts.append("<i>Сильные стороны:</i> " + escape(", ".join(map(str, lp['strengths']))))
         if lp.get('risks'):
-            parts.append("_Риски:_ " + ", ".join(lp['risks']))
+            parts.append("<i>Риски:</i> " + escape(", ".join(map(str, lp['risks']))))
         if lp.get('advice'):
-            parts.append("_Советы:_ " + ", ".join(lp['advice']))
+            parts.append("<i>Советы:</i> " + escape(", ".join(map(str, lp['advice']))))
+
     pm = report.get("pythagoras_matrix", {})
     if pm:
         grid = pm.get('grid_text')
         if grid:
             parts.append("")
-            parts.append("*Матрица Пифагора*:\n````\n" + grid + "\n````")
+            parts.append("<b>Матрица Пифагора</b>:")
+            parts.append(f"<pre>{escape(str(grid))}</pre>")
         lo = pm.get('lines_overview') or []
         if lo:
             parts.append("")
-            parts.append("*Линии и оси:*\n" + "\n".join([f"• {i.get('axis')}: {i.get('total')} — {i.get('tone')}. {i.get('comment','')}" for i in lo]))
+            lines = []
+            for i in lo:
+                axis = escape(str(i.get('axis','')))
+                total = escape(str(i.get('total','')))
+                tone = escape(str(i.get('tone','')))
+                comment = escape(str(i.get('comment','')))
+                lines.append(f"&bull; {axis}: {total} — {tone}. {comment}")
+            parts.append("<b>Линии и оси:</b><br>" + "<br>".join(lines))
+
     pr = report.get("practical_recs", {})
     if pr:
         if pr.get('week'):
             parts.append("")
-            parts.append("*Рекомендации на неделю:*\n" + "\n".join(["• " + x for x in pr['week']]))
+            parts.append("<b>Рекомендации на неделю:</b><br>" + "<br>".join(["&bull; " + escape(str(x)) for x in pr['week']]))
         if pr.get('month'):
             parts.append("")
-            parts.append("*Рекомендации на месяц:*\n" + "\n".join(["• " + x for x in pr['month']]))
+            parts.append("<b>Рекомендации на месяц:</b><br>" + "<br>".join(["&bull; " + escape(str(x)) for x in pr['month']]))
         if pr.get('focus_areas'):
             parts.append("")
-            parts.append("*Фокусы:* " + ", ".join(pr['focus_areas']))
+            parts.append("<b>Фокусы:</b> " + escape(", ".join(map(str, pr['focus_areas']))))
+
     dn = report.get("data_notes") or []
     if dn:
         parts.append("")
-        parts.append("_Примечания к данным:_\n" + "\n".join(["• " + x for x in dn]))
-    return "\n".join(parts) if parts else "Готово."
+        parts.append("<i>Примечания к данным:</i><br>" + "<br>".join(["&bull; " + escape(str(x)) for x in dn]))
+
+    # Join with double breaks between sections
+    html_text = "\n".join(parts)
+    return html_text if html_text.strip() else "Готово."
 
 async def generate_and_send_numerology_report(update: Update, context: ContextTypes.DEFAULT_TYPE, *, full_name: str, dob: str, life_path: int, counts: dict, lines: dict, ext: dict, order_id: int | None):
     """Build prompt, call LLM, parse JSON, save to order meta, and send nicely formatted text."""
@@ -475,8 +495,8 @@ async def generate_and_send_numerology_report(update: Update, context: ContextTy
         if order_id:
             update_order(order_id, meta_merge={"llm_report": report})
         # Render and send
-        md = _render_report_markdown(report)
-        await update.message.reply_text(md, parse_mode="Markdown")
+        html_text = _render_report_html(report)
+        await update.message.reply_text(html_text, parse_mode="HTML")
     except Exception as e:
         log.exception("LLM error: %s", e)
         # если пишет админ — покажем тех. причину
