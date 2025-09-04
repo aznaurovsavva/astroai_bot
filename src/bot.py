@@ -18,6 +18,8 @@ log = logging.getLogger("astro-num-bot")
 if TEST_MODE:
     log.warning("[TEST MODE] Payments are disabled. Using simulated purchases.")
 
+log.info(f"ADMIN_ID set to: {ADMIN_ID}")
+
 # --- Simple SQLite storage (profiles + orders) ---
 DB_PATH = os.getenv("DB_PATH", "data.sqlite3")
 
@@ -189,6 +191,13 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if TEST_MODE:
         intro += "\n\n_Сейчас включён тестовый режим: оплата отключена, доступ выдаётся для проверки флоу._"
     await update.message.reply_text(intro, reply_markup=InlineKeyboardMarkup(MENU), parse_mode="Markdown")
+
+
+# --- Whoami command handler ---
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    await update.message.reply_text(
+        f"your id: {u.id}\nADMIN_ID: {ADMIN_ID}\nTEST_MODE: {TEST_MODE}")
 
 
 # --- Admin command: show last orders ---
@@ -519,6 +528,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("orders_last", orders_last))
     app.add_handler(CallbackQueryHandler(on_menu))
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
