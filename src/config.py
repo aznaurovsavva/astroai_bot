@@ -7,6 +7,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ADMIN_ID=1084054813
 TEST_MODE=True
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 
 
