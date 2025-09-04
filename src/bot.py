@@ -180,6 +180,59 @@ def render_pythagoras_grid(counts: dict) -> str:
     row3 = f"{cell(3):<7} | {cell(6):<7} | {cell(9):<7}"
     return "\n".join([row1, row2, row3])
 
+# --- Матрица Пифагора: линии/столбцы/диагонали + короткие трактовки по насыщенности ---
+def pythagoras_lines(counts: dict) -> dict:
+    """Возвращает суммарные значения по классическим линиям матрицы.
+    rows:  1-4-7 (character), 2-5-8 (energy), 3-6-9 (talent)
+    cols:  1-2-3 (will/mind), 4-5-6 (responsibility/family), 7-8-9 (luck/spirit)
+    diags: 1-5-9 (purpose), 3-5-7 (self-discipline)
+    """
+    get = lambda *nums: sum(counts.get(n, 0) for n in nums)
+    return {
+        "row_147": get(1,4,7),  # характер/воля
+        "row_258": get(2,5,8),  # энергия/эмоции
+        "row_369": get(3,6,9),  # талант/коммуникация
+        "col_123": get(1,2,3),  # ум/целеустремленность
+        "col_456": get(4,5,6),  # бытовая ответственность/семья
+        "col_789": get(7,8,9),  # удача/духовная опора
+        "diag_159": get(1,5,9), # предназначение/осевой вектор
+        "diag_357": get(3,5,7), # самодисциплина/волевые привычки
+    }
+
+def _saturation_phrase(total: int) -> str:
+    # Небольшая шкала насыщенности
+    if total <= 0:
+        return "пусто → зона для роста"
+        
+    if total == 1:
+        return "тонкая линия → гибкий потенциал"
+
+    if total == 2:
+        return "сбалансировано → стабильная опора"
+
+    if total == 3:
+        return "выражено → заметная сила"
+
+    return "перенасыщено → важно направлять экологично"
+
+def render_pythagoras_summary(counts: dict) -> str:
+    L = pythagoras_lines(counts)
+    items = [
+        ("1–4–7 (характер)",       L["row_147"]),
+        ("2–5–8 (энергия)",        L["row_258"]),
+        ("3–6–9 (талант)",         L["row_369"]),
+        ("1–2–3 (ум/цель)",        L["col_123"]),
+        ("4–5–6 (ответств.)",      L["col_456"]),
+        ("7–8–9 (удача/дух.)",     L["col_789"]),
+        ("1–5–9 (предназнач.)",    L["diag_159"]),
+        ("3–5–7 (самодисп.)",      L["diag_357"]),
+    ]
+    # Сформируем компактные строки вида: «1–4–7 (характер): 2 — сбалансировано …»
+    parts = []
+    for name, total in items:
+        parts.append(f"• {name}: {total} — {_saturation_phrase(total)}")
+    return "\n".join(parts)
+
 
 async def send_service_text(q, caption: str, buy_cbdata: str, buy_label: str):
     kb = InlineKeyboardMarkup([
@@ -542,6 +595,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Матрица Пифагора
         counts = pythagoras_counts(dob_str)
         grid_str = render_pythagoras_grid(counts)
+        line_totals = pythagoras_lines(counts)
+        lines_summary = render_pythagoras_summary(counts)
 
         order_id = ud.get("order_id")
         if order_id:
@@ -550,6 +605,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "num_name": full_name,
                 "life_path": life_path,
                 "pythagoras_counts": counts,
+                "pythagoras_lines": line_totals,
             })
 
         ud["flow"] = None; ud["state"] = None
@@ -560,6 +616,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Число судьбы: *{life_path}* — {meaning}\n\n"
             "Матрица Пифагора:\n"
             "```\n" + grid_str + "\n```\n\n"
+            "Линии и оси матрицы:\n"
+            + lines_summary + "\n\n"
             "Это краткая версия. Полный разбор с дополнительными показателями и рекомендациями добавим в ближайшее время.",
             parse_mode="Markdown",
         )
