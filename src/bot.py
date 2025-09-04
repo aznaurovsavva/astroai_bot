@@ -2,12 +2,14 @@ import logging
 import re
 from datetime import datetime
 import os, json, sqlite3
+import asyncio
+import requests
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ContextTypes, PreCheckoutQueryHandler, MessageHandler, filters
 )
-from .config import BOT_TOKEN, TEST_MODE, ADMIN_ID
+from .config import BOT_TOKEN, TEST_MODE, ADMIN_ID, OPENAI_API_KEY
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -128,11 +130,164 @@ NUM_INPUT  = "num_input"
 
 # Карта сумм для записи в заказы
 
+
 AMOUNT_BY_PAYLOAD = {
     "NUM_200": PRICE_NUM,
     "PALM_300": PRICE_PALM,
     "NATAL_500": PRICE_NATAL,
 }
+
+# --- LLM: Prompt builders for detailed numerology report ---
+SYSTEM_PROMPT = (
+    "Вы — команда AstroMagic: практикующие астрологи и нумерологи. "
+    "Готовьте развёрнутый, художественно-эзотерический, но структурированный отчёт на русском, "
+    "используя ТОЛЬКО переданные данные. Проверяйте согласованность и мягко отмечайте расхождения. "
+    "Без фатализма и без медицинских/финансовых советов."
+)
+
+DEVELOPER_PROMPT = (
+    "Правила вывода: верните СТРОГО один JSON-объект со структурой:\n"
+    "{\n"
+    "  \"title\": str,\n"
+    "  \"summary\": str,\n"
+    "  \"life_path\": {\"value\": int, \"meaning\": str, \"strengths\": [str], \"risks\": [str], \"advice\": [str]},\n"
+    "  \"pythagoras_matrix\": {\n"
+    "    \"grid_text\": str,\n"
+    "    \"lines_overview\": [{\"axis\": str, \"total\": int, \"tone\": str, \"comment\": str}],\n"
+    "    \"digits\": [{\"digit\": int, \"count\": int, \"meaning\": str, \"advice\": str}],\n"
+    "    \"missing\": [int], \"dominant\": [int]\n"
+    "  },\n"
+    "  \"practical_recs\": {\"week\": [str], \"month\": [str], \"focus_areas\": [str]},\n"
+    "  \"data_notes\": [str]\n"
+    "}\n"
+    "Никаких пояснений вне JSON."
+)
+
+def build_user_prompt_for_numerology(input_payload: dict) -> str:
+  # Compose a deterministic, readable block the model will parse
+  return (
+    "Ниже — данные пользователя для нумерологического разбора. Проверьте согласованность и подготовьте JSON отчёт.\n\n"
+    f"full_name: {input_payload.get('full_name','')}\n"
+    f"dob_ddmmyyyy: {input_payload.get('dob_ddmmyyyy','')}\n"
+    f"life_path: {input_payload.get('life_path','')}\n\n"
+    "pythagoras_counts:\n" + json.dumps(input_payload.get('pythagoras_counts', {}), ensure_ascii=False) + "\n\n"
+    "pythagoras_lines:\n" + json.dumps(input_payload.get('pythagoras_lines', {}), ensure_ascii=False) + "\n\n"
+    "pythagoras_ext:\n" + json.dumps(input_payload.get('pythagoras_ext', {}), ensure_ascii=False) + "\n"
+  )
+
+async def _openai_chat_completion(messages: list, *, model: str = "gpt-5-thinking", temperature: float = 0.6, top_p: float = 0.9, max_tokens: int = 1800) -> dict:
+    """Call OpenAI Chat Completions API in a thread (requests is blocking)."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_tokens": max_tokens,
+        "messages": messages,
+    }
+    def _post():
+        return requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+    resp = await asyncio.to_thread(_post)
+    resp.raise_for_status()
+    return resp.json()
+
+def _try_parse_json_from_text(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except Exception:
+        # try to extract first JSON block
+        start = text.find('{'); end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            snippet = text[start:end+1]
+            try:
+                return json.loads(snippet)
+            except Exception:
+                return {}
+        return {}
+
+def _render_report_markdown(report: dict) -> str:
+    # Convert the returned JSON into a readable Telegram message
+    parts = []
+    title = report.get("title")
+    if title:
+        parts.append(f"*{title}*")
+    summary = report.get("summary")
+    if summary:
+        parts.append(summary)
+    lp = report.get("life_path", {})
+    if lp:
+        parts.append("")
+        parts.append(f"*Число судьбы:* {lp.get('value')} — {lp.get('meaning','')}")
+        if lp.get('strengths'):
+            parts.append("_Сильные стороны:_ " + ", ".join(lp['strengths']))
+        if lp.get('risks'):
+            parts.append("_Риски:_ " + ", ".join(lp['risks']))
+        if lp.get('advice'):
+            parts.append("_Советы:_ " + ", ".join(lp['advice']))
+    pm = report.get("pythagoras_matrix", {})
+    if pm:
+        grid = pm.get('grid_text')
+        if grid:
+            parts.append("")
+            parts.append("*Матрица Пифагора*:\n````\n" + grid + "\n````")
+        lo = pm.get('lines_overview') or []
+        if lo:
+            parts.append("")
+            parts.append("*Линии и оси:*\n" + "\n".join([f"• {i.get('axis')}: {i.get('total')} — {i.get('tone')}. {i.get('comment','')}" for i in lo]))
+    pr = report.get("practical_recs", {})
+    if pr:
+        if pr.get('week'):
+            parts.append("")
+            parts.append("*Рекомендации на неделю:*\n" + "\n".join(["• " + x for x in pr['week']]))
+        if pr.get('month'):
+            parts.append("")
+            parts.append("*Рекомендации на месяц:*\n" + "\n".join(["• " + x for x in pr['month']]))
+        if pr.get('focus_areas'):
+            parts.append("")
+            parts.append("*Фокусы:* " + ", ".join(pr['focus_areas']))
+    dn = report.get("data_notes") or []
+    if dn:
+        parts.append("")
+        parts.append("_Примечания к данным:_\n" + "\n".join(["• " + x for x in dn]))
+    return "\n".join(parts) if parts else "Готово."
+
+async def generate_and_send_numerology_report(update: Update, context: ContextTypes.DEFAULT_TYPE, *, full_name: str, dob: str, life_path: int, counts: dict, lines: dict, ext: dict, order_id: int | None):
+    """Build prompt, call LLM, parse JSON, save to order meta, and send nicely formatted text."""
+    input_payload = {
+        "full_name": full_name,
+        "dob_ddmmyyyy": dob,
+        "life_path": life_path,
+        "pythagoras_counts": counts,
+        "pythagoras_lines": lines,
+        "pythagoras_ext": ext,
+    }
+    if not OPENAI_API_KEY:
+        await update.message.reply_text("(Подробный отчёт GPT отключён: нет OPENAI_API_KEY)")
+        return
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": DEVELOPER_PROMPT},
+        {"role": "user", "content": build_user_prompt_for_numerology(input_payload)},
+    ]
+    try:
+        raw = await _openai_chat_completion(messages)
+        content = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        report = _try_parse_json_from_text(content)
+        if not report:
+            await update.message.reply_text("Не удалось распарсить отчёт GPT. Попробуйте ещё раз позднее.")
+            return
+        # Save JSON to order meta
+        if order_id:
+            update_order(order_id, meta_merge={"llm_report": report})
+        # Render and send
+        md = _render_report_markdown(report)
+        await update.message.reply_text(md, parse_mode="Markdown")
+    except Exception as e:
+        log.exception("LLM error: %s", e)
+        await update.message.reply_text("Во время генерации отчёта произошла ошибка. Мы всё поправим и пришлём позже.")
 
 # --- Нумерология: расчёт числа судьбы + короткие трактовки ---
 NUM_DESCRIPTIONS = {
@@ -724,6 +879,20 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Это краткая версия. Полный разбор с дополнительными показателями и рекомендациями добавим в ближайшее время.",
             parse_mode="Markdown",
         )
+        # Генерация подробного отчёта через GPT (параллельно после экспресс-вывода)
+        try:
+            await generate_and_send_numerology_report(
+                update, context,
+                full_name=full_name,
+                dob=dob_str,
+                life_path=life_path,
+                counts=counts,
+                lines=line_totals,
+                ext=ext,
+                order_id=order_id,
+            )
+        except Exception as e:
+            log.exception("Failed to generate LLM report: %s", e)
         return
 
 # --- Photo router for palmistry ---
