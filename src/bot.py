@@ -9,7 +9,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ContextTypes, PreCheckoutQueryHandler, MessageHandler, filters
 )
-from .config import BOT_TOKEN, TEST_MODE, ADMIN_ID, OPENAI_API_KEY, GEMINI_API_KEY
+from .config import BOT_TOKEN, TEST_MODE, ADMIN_ID, OPENAI_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -234,9 +234,56 @@ async def _openai_chat_completion(messages: list, *, temperature: float = 0.6, t
     raise RuntimeError(f"OpenAI all candidates failed. Last: {last_err_text}")
 
 
-# Primary LLM router: OpenAI → Gemini fallback
+# --- Mistral Chat Completion ---
+async def _mistral_chat_completion(messages: list, *, temperature: float = 0.6, top_p: float = 0.9, max_tokens: int = 1400) -> dict:
+    """
+    Call Mistral chat.completions API and normalize the response to OpenAI-like format.
+    """
+    if not MISTRAL_API_KEY:
+        raise RuntimeError("MISTRAL_API_KEY is not set")
+
+    url = "https://api.mistral.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {MISTRAL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    model_candidates = [
+        "mistral-small-latest",
+        "open-mixtral-8x7b",
+    ]
+
+    last_err_text = ""
+    for model in model_candidates:
+        payload = {
+            "model": model,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "messages": messages,
+            # Просим вернуть JSON; если модель не поддержит — всё равно попробуем распарсить
+            "response_format": {"type": "json_object"},
+        }
+
+        def _post():
+            return requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+
+        resp = await asyncio.to_thread(_post)
+        if resp.status_code // 100 == 2:
+            return resp.json()
+        else:
+            try:
+                last_err_text = resp.text
+            except Exception:
+                last_err_text = f"HTTP {resp.status_code}"
+            log.warning("Mistral error on model %s: %s", model, last_err_text)
+
+    raise RuntimeError(f"Mistral all candidates failed. Last: {last_err_text}")
+
+
+# Primary LLM router: OpenAI → Gemini → Mistral fallback
 async def _llm_chat_completion(messages: list, *, temperature: float = 0.6, top_p: float = 0.9, max_tokens: int = 1400) -> dict:
-    """Primary LLM router: OpenAI → Gemini fallback. Возвращает объект в формате OpenAI ChatCompletions."""
+    """Primary LLM router: OpenAI → Gemini → Mistral fallback. Возвращает объект в формате OpenAI ChatCompletions."""
     last_error = None
 
     # 1) Try OpenAI if key exists
@@ -276,10 +323,18 @@ async def _llm_chat_completion(messages: list, *, temperature: float = 0.6, top_
         except Exception as e:
             last_error = e
 
-    # Если сюда дошли — нет доступных провайдеров или оба упали
-    if not OPENAI_API_KEY and not GEMINI_API_KEY:
-        raise RuntimeError("No LLM keys configured (OPENAI_API_KEY/GEMINI_API_KEY)")
-    raise RuntimeError(f"All LLM providers failed: {last_error}")
+    # 3) Try Mistral if key exists
+    if MISTRAL_API_KEY:
+        try:
+            return await _mistral_chat_completion(messages, temperature=temperature, top_p=top_p, max_tokens=max_tokens)
+        except Exception as e:
+            last_error = e
+            log.warning("Mistral failed as well: %s", e)
+
+    # Если сюда дошли — нет доступных провайдеров или все упали
+    if not OPENAI_API_KEY and not GEMINI_API_KEY and not MISTRAL_API_KEY:
+        raise RuntimeError("No LLM keys configured (OPENAI_API_KEY / GEMINI_API_KEY / MISTRAL_API_KEY)")
+    raise RuntimeError(f"All LLM providers failed (OpenAI/Gemini/Mistral). Last: {last_error}")
 
 def _try_parse_json_from_text(text: str) -> dict:
     try:
