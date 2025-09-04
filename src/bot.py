@@ -127,11 +127,36 @@ PALM_PHOTO = "palm_photo"
 NUM_INPUT  = "num_input"
 
 # Карта сумм для записи в заказы
+
 AMOUNT_BY_PAYLOAD = {
     "NUM_200": PRICE_NUM,
     "PALM_300": PRICE_PALM,
     "NATAL_500": PRICE_NATAL,
 }
+
+# --- Нумерология: расчёт числа судьбы + короткие трактовки ---
+NUM_DESCRIPTIONS = {
+    1: "Лидерство, самостоятельность, импульс к началу.",
+    2: "Дипломатия, партнёрство, чуткость.",
+    3: "Коммуникация, творчество, выражение себя.",
+    4: "Структура, дисциплина, надёжность.",
+    5: "Свобода, перемены, путешествия, гибкость.",
+    6: "Забота, семья, красота, ответственность.",
+    7: "Аналитика, духовность, глубокие смыслы.",
+    8: "Амбиции, ресурсы, управление и влияние.",
+    9: "Служение, гуманизм, завершение циклов.",
+    11: "Мастер-число интуиции и вдохновения.",
+    22: "Мастер-число созидателя больших проектов.",
+}
+
+def calc_life_path_ddmmyyyy(date_str: str) -> int:
+    digits = [int(ch) for ch in date_str if ch.isdigit()]
+    s = sum(digits)
+    def reduce(n: int) -> int:
+        while n not in (11, 22) and n > 9:
+            n = sum(int(c) for c in str(n))
+        return n
+    return reduce(s)
 
 
 async def send_service_text(q, caption: str, buy_cbdata: str, buy_label: str):
@@ -489,19 +514,24 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Дата выглядит некорректно. Проверь и пришли ещё раз.")
             return
 
+        life_path = calc_life_path_ddmmyyyy(dob_str)
+        meaning = NUM_DESCRIPTIONS.get(life_path, "Личный путь и опыт через число судьбы.")
+
         order_id = ud.get("order_id")
         if order_id:
             update_order(order_id, status="done", meta_merge={
                 "num_dob": dob_str,
                 "num_name": full_name,
+                "life_path": life_path,
             })
 
         ud["flow"] = None; ud["state"] = None
         await update.message.reply_text(
-            "Отлично! Я записал данные для нумерологического разбора:\n\n"
-            f"• Дата: *{dob_str}*\n"
-            f"• Имя/ФИО: *{full_name}*\n\n"
-            "Скоро пришлю разбор.",
+            "**Нумерологический экспресс-разбор**\n\n"
+            f"• Имя: *{full_name}*\n"
+            f"• Дата рождения: *{dob_str}*\n"
+            f"• Число судьбы: *{life_path}* — {meaning}\n\n"
+            "Это краткая версия. Полный разбор с матрицей, кодами задач и рекомендациями добавим в ближайшее время.",
             parse_mode="Markdown",
         )
         return
