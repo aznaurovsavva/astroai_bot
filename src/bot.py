@@ -124,6 +124,7 @@ PRICE_NATAL = 220   # ~500 ₽
 NATAL_DATE = "natal_date"
 NATAL_TIME = "natal_time"
 NATAL_CITY = "natal_city"
+NATAL_ALL  = "natal_all"
 
 # Состояния для хиромантии и нумерологии
 PALM_PHOTO = "palm_photo"
@@ -705,6 +706,64 @@ def extended_matrix_meta(counts: dict) -> dict:
     }
 
 
+# --- Natalka PRO: helper to parse all-in-one input ---
+def _parse_natal_all_input(text: str):
+    """
+    Парсит 4 строки из одного сообщения:
+    1) ФИО
+    2) Дата рождения ДД.ММ.ГГГГ
+    3) Время рождения ЧЧ:ММ или «не знаю»
+    4) Город и страна
+    Возвращает (ok: bool, data_or_error: dict|str)
+    """
+    t = (text or "").replace("\r", "")
+    lines = [ln.strip() for ln in t.split("\n") if ln.strip()]
+    if len(lines) < 4:
+        return False, "Пожалуйста, пришлите *четыре строки*: ФИО, дата (ДД.ММ.ГГГГ), время (ЧЧ:ММ или «не знаю»), город и страна."
+
+    full_name = lines[0]
+    dob_str   = lines[1]
+    time_str  = lines[2]
+    city_str  = lines[3]
+
+    # Дата
+    if not re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", dob_str or ""):
+        return False, "Дата указывается как `ДД.ММ.ГГГГ`, например `21.09.1999`."
+    try:
+        _ = datetime.strptime(dob_str, "%d.%m.%Y")
+    except Exception:
+        return False, "Похоже, дата некорректна. Проверь, пожалуйста."
+
+    # Время
+    low = (time_str or "").lower().strip()
+    if low in ("не знаю", "неизвестно", "нет", "-"):
+        time_val = None
+    else:
+        m = re.fullmatch(r"(\d{1,2})[:\.]?(\d{2})?(?:\s*(утра|вечера|am|pm))?", low)
+        if not m:
+            return False, "Время укажи так: `ЧЧ:ММ` (например, `14:25`). Можно написать «не знаю»."
+        hh = int(m.group(1))
+        mm = int(m.group(2)) if m.group(2) else 0
+        suffix = m.group(3)
+        if suffix in ("pm", "вечера") and 1 <= hh <= 11:
+            hh += 12
+        if suffix in ("am", "утра") and hh == 12:
+            hh = 0
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return False, "Часы 0–23 и минуты 0–59. Проверь, пожалуйста."
+        time_val = f"{hh:02d}:{mm:02d}"
+
+    if len(city_str or "") < 2:
+        return False, "Нужно указать город и страну. Например: `Омск, Россия`."
+
+    return True, {
+        "full_name": full_name,
+        "natal_date": dob_str,
+        "natal_time": time_val,
+        "natal_city": city_str,
+    }
+
+
 async def send_service_text(q, caption: str, buy_cbdata: str, buy_label: str):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(buy_label, callback_data=buy_cbdata)],
@@ -856,7 +915,8 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption_natal = (
             "🌌 *Натальная карта Pro*\n\n"
             "Твой личный небесный атлас: планеты, знаки, *дома* и ключевые *аспекты* + нумерологический штрих-код. Отдельно отмечу ресурсы, риски и мягкие рекомендации на ближайший цикл.\n\n"
-            "Что понадобится: дата, город и — по возможности — точное время рождения.\n\n"
+            "Что понадобится: дата, город и — по возможности — точное время рождения.\n"
+            "Отправка данных: *одним сообщением* в 4 строки — ФИО, дата, время (или «не знаю»), город и страна.\n\n"
             "Результат: структурированный текст 6–10 абзацев.\n\n"
             "Стоимость: *220 ⭐* (≈ 500 ₽)."
         )
@@ -934,11 +994,20 @@ async def _begin_flow_after_payment(payload: str, update: Update, context: Conte
 
     # Наталка PRO
     if payload == "NATAL_500":
-        ud["flow"] = "natal"; ud["state"] = NATAL_DATE
+        ud["flow"] = "natal"; ud["state"] = NATAL_ALL
         await update.effective_chat.send_message(
-            "Оплата получена ✅\n\nДавай начнём разбор.\n"
-            "1) Напиши дату рождения в формате ДД.ММ.ГГГГ\n\n"
-            "Пример: 21.09.1999"
+            "Оплата получена ✅\n\n"
+            "Пришли данные *одним сообщением*, оформленным в 4 строки (каждая с новой строки):\n\n"
+            "ФИО\n"
+            "Дата рождения (ДД.ММ.ГГГГ)\n"
+            "Время рождения (ЧЧ:ММ или «не знаю»)\n"
+            "Город и страна\n\n"
+            "Пример:\n"
+            "Иван Иванов\n"
+            "21.09.1999\n"
+            "06:23\n"
+            "Омск, Россия",
+            parse_mode="Markdown",
         )
         return
 
@@ -979,6 +1048,33 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---------- Наталка ----------
     if flow == "natal":
+        if state == NATAL_ALL:
+            ok, data = _parse_natal_all_input(text)
+            if not ok:
+                await update.message.reply_text(str(data), parse_mode="Markdown")
+                return
+
+            order_id = ud.get("order_id")
+            if order_id:
+                update_order(order_id, status="done", meta_merge={
+                    "natal_full_name": data["full_name"],
+                    "natal_date": data["natal_date"],
+                    "natal_time": data["natal_time"],
+                    "natal_city": data["natal_city"],
+                })
+
+            ud["flow"] = None; ud["state"] = None
+            await update.message.reply_text(
+                "Спасибо! Я записал данные для Наталки PRO:\n\n"
+                f"• ФИО: `{data['full_name']}`\n"
+                f"• Дата: `{data['natal_date']}`\n"
+                f"• Время: `{data['natal_time'] or 'неизвестно'}`\n"
+                f"• Город: `{data['natal_city']}`\n\n"
+                "На следующем шаге подключим точные расчёты и пришлём разбор.",
+                parse_mode="Markdown",
+            )
+            return
+
         if state == NATAL_DATE:
             if not re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", text):
                 await update.message.reply_text("Пожалуйста, укажи дату в формате ДД.ММ.ГГГГ. Например: 07.03.1995")
