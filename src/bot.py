@@ -128,6 +128,7 @@ NATAL_ALL  = "natal_all"
 
 # Состояния для хиромантии и нумерологии
 PALM_PHOTO = "palm_photo"
+PALM_CTX   = "palm_ctx"   # <— новый стейт для короткого текстового контекста после фото
 NUM_INPUT  = "num_input"
 
 # Карта сумм для записи в заказы
@@ -203,6 +204,7 @@ NATAL_DEVELOPER_PROMPT = (
 )
 
 
+
 def build_user_prompt_for_natal(input_payload: dict) -> str:
     """
     Собираем читабельный блок для модели (Наталка PRO).
@@ -217,6 +219,47 @@ def build_user_prompt_for_natal(input_payload: dict) -> str:
         f"city_country: {input_payload.get('city','')}\n"
         f"life_path: {input_payload.get('life_path','')}\n"
         "timezone_hint: если время неизвестно — добавьте в data_notes допущение про полдень/локальную зону."
+    )
+
+
+# --- LLM: Prompt for Palmistry (Хиромантия) ---
+
+PALM_DEVELOPER_PROMPT = (
+    "Верните СТРОГО один JSON-объект ТОЛЬКО в теле ответа, без markdown/комментариев. "
+    "JSON ДОЛЖЕН быть минифицирован (в одну строку). Структура:"
+    "{"
+    "\"title\":str,"
+    "\"summary\":str,"
+    "\"hand_overview\":{\"dominant\":(str|null),\"general\":[str]},"
+    "\"lines\":{"
+      "\"heart\":{\"tone\":str,\"details\":[str]},"
+      "\"head\":  {\"tone\":str,\"details\":[str]},"
+      "\"life\":  {\"tone\":str,\"details\":[str]},"
+      "\"fate\":  {\"present\":bool,\"details\":[str]}"
+    "},"
+    "\"mounts\":[{\"name\":str,\"expression\":str,\"comment\":str}],"
+    "\"patterns\":[str],"
+    "\"practical_recs\":{\"week\":[str],\"month\":[str],\"focus_areas\":[str]},"
+    "\"data_notes\":[str]"
+    "}"
+)
+
+def build_user_prompt_for_palm(*, full_name: str | None, dominant_hand: str | None, user_context: str | None, has_photo: bool, tg_file_id: str | None) -> str:
+    """
+    Собираем вход для модели: имя (опц.), доминантная рука (опц.), контекст пользователя (опц.),
+    факт наличия фото (да/нет) и telegram file_id (как идентификатор, без содержимого).
+    """
+    return (
+        "Хиромантия (разбор по фото ладони). "
+        "Напишите образный, но структурированный отчёт на русском по схеме JSON. "
+        "Не давайте медицинских/финансовых советов. Учитывайте, что модель НЕ видит само фото; "
+        "используйте мягкие формулировки и допускайте неопределённость.\n\n"
+        f"full_name: {full_name or ''}\n"
+        f"dominant_hand: {dominant_hand or ''}\n"
+        f"user_context: {user_context or ''}\n"
+        f"photo_provided: {'yes' if has_photo else 'no'}\n"
+        f"telegram_file_id: {tg_file_id or ''}\n"
+        "Пояснение: если чего-то нельзя утверждать без визуального подтверждения, добавляйте сноску в data_notes."
     )
 
 
@@ -576,6 +619,87 @@ def _render_natal_report_html(report: dict) -> str:
     html = "\n".join(out).strip()
     return html or "Готово."
 
+
+# --- Palmistry: Render HTML report for palmistry report ---
+def _render_palm_report_html(report: dict) -> str:
+    from html import escape
+    out: list[str] = []
+
+    title = report.get("title")
+    if title:
+        out.append(f"<b>{escape(str(title))}</b>")
+
+    summary = report.get("summary")
+    if summary:
+        out.append(escape(str(summary)))
+
+    hov = report.get("hand_overview") or {}
+    if hov:
+        out.append("")
+        dom = hov.get("dominant")
+        gen = hov.get("general") or []
+        if dom:
+            out.append(f"<b>Ведущая рука:</b> {escape(str(dom))}")
+        if gen:
+            out.append("<b>Общее впечатление:</b>")
+            out.extend("• " + escape(str(x)) for x in gen)
+
+    lines = report.get("lines") or {}
+    if lines:
+        out.append("")
+        out.append("<b>Линии:</b>")
+        def _block(name_ru: str, key: str):
+            node = lines.get(key) or {}
+            tone = node.get("tone", "")
+            dets = node.get("details") or []
+            if tone or dets:
+                out.append(f"• {name_ru}: {escape(str(tone))}")
+                for d in dets:
+                    out.append("   — " + escape(str(d)))
+        _block("Сердца", "heart")
+        _block("Головы", "head")
+        _block("Жизни", "life")
+        fate = lines.get("fate") or {}
+        if fate:
+            present = fate.get("present")
+            dets = fate.get("details") or []
+            out.append("• Судьбы: " + ("есть" if present else "не выражена/неопределима"))
+            for d in dets:
+                out.append("   — " + escape(str(d)))
+
+    mounts = report.get("mounts") or []
+    if mounts:
+        out.append("")
+        out.append("<b>Холмы:</b>")
+        for m in mounts:
+            out.append("• " + escape(f"{m.get('name','')}: {m.get('expression','')} — {m.get('comment','')}"))
+
+    pats = report.get("patterns") or []
+    if pats:
+        out.append("")
+        out.append("<b>Особые рисунки:</b>")
+        out.extend("• " + escape(str(x)) for x in pats)
+
+    recs = report.get("practical_recs") or []
+    if isinstance(recs, dict):
+        if recs.get("week"):
+            out.append("")
+            out.append("<b>Рекомендации на неделю:</b>\n" + "\n".join("• " + escape(str(x)) for x in recs["week"]))
+        if recs.get("month"):
+            out.append("")
+            out.append("<b>Рекомендации на месяц:</b>\n" + "\n".join("• " + escape(str(x)) for x in recs["month"]))
+        if recs.get("focus_areas"):
+            out.append("")
+            out.append("<b>Фокусы:</b> " + escape(", ".join(map(str, recs["focus_areas"]))))
+
+    notes = report.get("data_notes") or []
+    if notes:
+        out.append("")
+        out.append("<i>Примечания:</i>\n" + "\n".join("• " + escape(str(x)) for x in notes))
+
+    html = "\n".join(out).strip()
+    return html or "Готово."
+
 async def generate_and_send_numerology_report(update: Update, context: ContextTypes.DEFAULT_TYPE, *, full_name: str, dob: str, life_path: int, counts: dict, lines: dict, ext: dict, order_id: int | None):
     """Build prompt, call LLM, parse JSON, save to order meta, and send nicely formatted text."""
     input_payload = {
@@ -700,6 +824,64 @@ async def generate_and_send_natal_report(
             await update.message.reply_text(f"LLM error (Natal): {e}")
         else:
             await update.message.reply_text("Во время генерации натального отчёта произошла ошибка. Попробуем позже.")
+
+
+# --- Palmistry: Generate and send palm report via LLM ---
+async def generate_and_send_palm_report(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+    *, full_name: str | None, dominant_hand: str | None, user_context: str | None,
+    tg_file_id: str | None, order_id: int | None
+):
+    """Build prompt for Palmistry, call LLM, parse JSON, store meta, send HTML."""
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": PALM_DEVELOPER_PROMPT},
+        {"role": "user", "content": build_user_prompt_for_palm(
+            full_name=full_name,
+            dominant_hand=dominant_hand,
+            user_context=user_context,
+            has_photo=bool(tg_file_id),
+            tg_file_id=tg_file_id,
+        )},
+    ]
+    try:
+        raw = await _llm_chat_completion(messages)
+        content = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        report = _try_parse_json_from_text(content)
+        if not report:
+            if order_id:
+                try:
+                    update_order(order_id, meta_merge={"palm_llm_raw": (content or "")[:4000]})
+                except Exception:
+                    pass
+            # Сообщим админу сниппет, пользователю — мягкое сообщение
+            try:
+                is_admin = ADMIN_ID and update.effective_user and str(update.effective_user.id) == str(ADMIN_ID)
+            except Exception:
+                is_admin = False
+            if is_admin:
+                snippet = (content or "")
+                if len(snippet) > 800:
+                    snippet = snippet[:800] + "…"
+                await update.message.reply_text("Parse error (Palm): LLM вернул не-JSON. Сниппет:\n" + snippet)
+            await update.message.reply_text("Не удалось собрать разбор по ладони. Попробуем позже.")
+            return
+
+        if order_id:
+            update_order(order_id, status="done", meta_merge={"palm_llm_report": report, "palm_photo_file_id": tg_file_id})
+
+        html_text = _render_palm_report_html(report)
+        await update.message.reply_text(html_text, parse_mode="HTML")
+    except Exception as e:
+        log.exception("Palm LLM error: %s", e)
+        try:
+            is_admin = ADMIN_ID and update.effective_user and str(update.effective_user.id) == str(ADMIN_ID)
+        except Exception:
+            is_admin = False
+        if is_admin:
+            await update.message.reply_text(f"LLM error (Palm): {e}")
+        else:
+            await update.message.reply_text("Во время генерации разбора по ладони произошла ошибка.")
 
 # --- Нумерология: расчёт числа судьбы + короткие трактовки ---
 NUM_DESCRIPTIONS = {
@@ -1013,6 +1195,28 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         intro += "\n\n_Сейчас включён тестовый режим: оплата отключена, доступ выдаётся для проверки флоу._"
     await update.message.reply_text(intro, reply_markup=InlineKeyboardMarkup(MENU), parse_mode="Markdown")
 
+# --- Cancel command: drop current flow/state and return to menu ---
+async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ud = context.user_data
+    ud.clear()
+
+    intro = (
+        "✨ Добро пожаловать в *AstroMagic* ✨\n\n"
+        "Мы — команда практикующих астрологов, нумерологов и исследователей эзотерики.\n"
+        "Наша цель — сделать глубокие знания о звёздах, числах и линиях судьбы доступными каждому.\n\n"
+        "Каждый разбор создаётся с вниманием к деталям, с опорой на классические школы и современные методы. "
+        "Вы получаете не просто сухую интерпретацию, а образное и структурированное объяснение того, что скрыто "
+        "в вашей дате рождения, натальной карте или линиях ладони.\n\n"
+        "🔮 Что мы предлагаем:\n"
+        "• *Нумерология* — ваш уникальный код личности и предназначения.\n"
+        "• *Хиромантия* — чтение линий судьбы по фото ладони.\n"
+        "• *Натальная карта Pro* — комплексный астрологический разбор: планеты, дома, аспекты + нумерология.\n\n"
+        "Выберите направление ниже, и мы подготовим для вас персональный разбор с рекомендациями."
+    )
+    if TEST_MODE:
+        intro += "\n\n_Сейчас включён тестовый режим: оплата отключена, доступ выдаётся для проверки флоу._"
+    await update.message.reply_text(intro, reply_markup=InlineKeyboardMarkup(MENU), parse_mode="Markdown")
+
 
 # --- Whoami command handler ---
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1188,7 +1392,7 @@ async def _begin_flow_after_payment(payload: str, update: Update, context: Conte
         ud["flow"] = "natal"; ud["state"] = NATAL_ALL
         await update.effective_chat.send_message(
             "Оплата получена ✅\n\n"
-            "Пришли данные *одним сообщением*, оформленным в 4 строки (каждая с новой строки):\n\n"
+            "Пришли *одним сообщением* в 4 строки (каждая с новой строки):\n\n"
             "ФИО\n"
             "Дата рождения (ДД.ММ.ГГГГ)\n"
             "Время рождения (ЧЧ:ММ или «не знаю»)\n"
@@ -1197,7 +1401,8 @@ async def _begin_flow_after_payment(payload: str, update: Update, context: Conte
             "Иван Иванов\n"
             "21.09.1999\n"
             "06:23\n"
-            "Омск, Россия",
+            "Омск, Россия\n\n"
+            "Если ошиблись разделом — введите /cancel.",
             parse_mode="Markdown",
         )
         return
@@ -1206,7 +1411,8 @@ async def _begin_flow_after_payment(payload: str, update: Update, context: Conte
     if payload == "PALM_300":
         ud["flow"] = "palm"; ud["state"] = PALM_PHOTO
         await update.effective_chat.send_message(
-            "Оплата получена ✅\n\nПришли *одно чёткое фото правой ладони* при хорошем освещении.",
+            "Оплата получена ✅\n\nПришли *одно чёткое фото правой ладони* при хорошем освещении.\n\n"
+            "Если ошиблись разделом — введите /cancel.",
             parse_mode="Markdown",
         )
         return
@@ -1216,7 +1422,8 @@ async def _begin_flow_after_payment(payload: str, update: Update, context: Conte
         ud["flow"] = "num"; ud["state"] = NUM_INPUT
         await update.effective_chat.send_message(
             "Оплата получена ✅\n\nНапиши *дату рождения и ФИО одной строкой* в формате:\n"
-            "`ДД.ММ.ГГГГ Имя Фамилия`\n\nНапример: `21.09.1999 Иван Иванов`",
+            "`ДД.ММ.ГГГГ Имя Фамилия`\n\nНапример: `21.09.1999 Иван Иванов`\n\n"
+            "Если ошиблись разделом — введите /cancel.",
             parse_mode="Markdown",
         )
         return
@@ -1344,6 +1551,49 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    # ---------- Хиромантия ----------
+    if flow == "palm":
+        if state == PALM_CTX:
+            ctx_text = text.strip()
+            if ctx_text.lower() in ("пропустить", "skip", "нет"):
+                ctx_text = None
+
+            order_id = ud.get("order_id")
+            tg_file_id = ud.get("palm_photo_file_id")
+            if not tg_file_id:
+                # фото потеряно/не было — просим прислать заново
+                ud["state"] = PALM_PHOTO
+                await update.message.reply_text(
+                    "Похоже, фото не найдено. Пришли, пожалуйста, одно чёткое фото правой ладони ещё раз.",
+                    parse_mode="Markdown",
+                )
+                return
+
+            # Пытаемся угадать доминантную руку из текста
+            dominant = None
+            if ctx_text:
+                low = ctx_text.lower()
+                if "левая" in low:
+                    dominant = "левая"
+                if "правая" in low:
+                    dominant = "правая"
+
+            ud["flow"] = None; ud["state"] = None
+            await update.message.reply_text("Готовлю разбор по ладони…", parse_mode="Markdown")
+
+            try:
+                await generate_and_send_palm_report(
+                    update, context,
+                    full_name=update.effective_user.full_name,
+                    dominant_hand=dominant,
+                    user_context=ctx_text,
+                    tg_file_id=tg_file_id,
+                    order_id=order_id,
+                )
+            except Exception as e:
+                log.exception("Failed to generate Palm LLM report: %s", e)
+            return
+
     # ---------- Нумерология ----------
     if flow == "num" and state == NUM_INPUT:
         parts = text.split(maxsplit=1)
@@ -1427,10 +1677,20 @@ async def photo_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     order_id = ud.get("order_id")
     if order_id:
-        update_order(order_id, status="done", meta_merge={"palm_photo_file_id": file_id})
+        # держим статус ожидания ввода контекста, фото сохраняем в мету
+        update_order(order_id, status="awaiting_input", meta_merge={"palm_photo_file_id": file_id})
 
-    ud["flow"] = None; ud["state"] = None
-    await update.message.reply_text("Фото получено ✅\n\nСкоро подготовим разбор по линиям ладони.")
+    # Сохраним file_id и попросим короткий контекст
+    ud["palm_photo_file_id"] = file_id
+    ud["state"] = PALM_CTX
+    ud["flow"] = "palm"
+
+    await update.message.reply_text(
+        "Фото получено ✅\n\n"
+        "Если хочешь — добавь пару строк контекста (возраст, ведущая рука, на что обратить внимание). "
+        "Или напиши ‘пропустить’.",
+        parse_mode="Markdown",
+    )
 
 def main():
     if not BOT_TOKEN:
@@ -1441,6 +1701,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("orders_last", orders_last))
     app.add_handler(CallbackQueryHandler(on_menu))
