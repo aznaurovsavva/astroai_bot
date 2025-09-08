@@ -180,6 +180,46 @@ def build_user_prompt_for_numerology(input_payload: dict) -> str:
   )
 
 
+# --- LLM: Prompt builders for detailed natal report ---
+
+NATAL_DEVELOPER_PROMPT = (
+    "Правила вывода: верните СТРОГО один JSON-объект ТОЛЬКО в теле ответа,\n"
+    "без markdown/комментариев/подсказок языка. Объект ДОЛЖЕН быть минифицирован (в одну строку).\n"
+    "{"
+    "\"title\":str,"
+    "\"summary\":str,"
+    "\"birth\":{\"full_name\":str,\"date\":str,\"time\":(str|null),\"city\":str,\"timezone_note\":str},"
+    "\"chart\":{"
+      "\"sun\":{\"sign\":str,\"comment\":str},"
+      "\"moon\":{\"sign\":str,\"comment\":str},"
+      "\"ascendant\":{\"sign\":str,\"comment\":str}"
+    "},"
+    "\"houses\":[{\"house\":int,\"topic\":str,\"comment\":str}],"
+    "\"aspects\":[{\"pair\":str,\"type\":str,\"tightness\":str,\"meaning\":str}],"
+    "\"numerology\":{\"life_path\":{\"value\":int,\"comment\":str}},"
+    "\"practical_recs\":{\"week\":[str],\"month\":[str],\"focus_areas\":[str]},"
+    "\"data_notes\":[str]"
+    "}"
+)
+
+
+def build_user_prompt_for_natal(input_payload: dict) -> str:
+    """
+    Собираем читабельный блок для модели (Наталка PRO).
+    Ожидаемые ключи: full_name, date (ДД.ММ.ГГГГ), time (ЧЧ:ММ или None), city, life_path (int).
+    """
+    return (
+        "Данные пользователя для астрологического разбора (Наталка PRO). "
+        "Проверьте согласованность и подготовьте JSON отчёт по схеме.\n\n"
+        f"full_name: {input_payload.get('full_name','')}\n"
+        f"date_ddmmyyyy: {input_payload.get('date','')}\n"
+        f"time_hhmm: {input_payload.get('time','')}\n"
+        f"city_country: {input_payload.get('city','')}\n"
+        f"life_path: {input_payload.get('life_path','')}\n"
+        "timezone_hint: если время неизвестно — добавьте в data_notes допущение про полдень/локальную зону."
+    )
+
+
 def _format_messages_for_gemini(messages: list) -> str:
     """Gemini принимает простой текст. Склеиваем роли и контент в один промпт."""
     chunks = []
@@ -451,6 +491,91 @@ def _render_report_html(report: dict) -> str:
     html_text = "\n".join(parts)
     return html_text if html_text.strip() else "Готово."
 
+
+# --- Natalka PRO: Render HTML report for natal chart ---
+def _render_natal_report_html(report: dict) -> str:
+    from html import escape
+    out: list[str] = []
+
+    title = report.get("title")
+    if title:
+        out.append(f"<b>{escape(str(title))}</b>")
+
+    summary = report.get("summary")
+    if summary:
+        out.append(escape(str(summary)))
+
+    birth = report.get("birth", {})
+    if birth:
+        out.append("")
+        out.append("<b>Исходные данные:</b>")
+        full_name = birth.get("full_name", "")
+        date = birth.get("date", "")
+        time = birth.get("time") or "неизвестно"
+        city = birth.get("city", "")
+        out.append("• " + escape(f"{full_name} — {date} {time} — {city}"))
+        tz = birth.get("timezone_note")
+        if tz:
+            out.append("<i>" + escape(str(tz)) + "</i>")
+
+    chart = report.get("chart", {})
+    if chart:
+        out.append("")
+        out.append("<b>Карта:</b>")
+        for key, label in (("sun", "Солнце"), ("moon", "Луна"), ("ascendant", "Асцендент")):
+            node = chart.get(key) or {}
+            sign = node.get("sign", "")
+            cmt = node.get("comment", "")
+            if sign or cmt:
+                out.append(f"• {label}: {escape(str(sign))} — {escape(str(cmt))}")
+
+    houses = report.get("houses") or []
+    if houses:
+        out.append("")
+        out.append("<b>Дома:</b>")
+        for h in houses:
+            house = h.get("house")
+            topic = h.get("topic", "")
+            comment = h.get("comment", "")
+            out.append(f"• Дом {escape(str(house))} — {escape(str(topic))}. {escape(str(comment))}")
+
+    aspects = report.get("aspects") or []
+    if aspects:
+        out.append("")
+        out.append("<b>Ключевые аспекты:</b>")
+        for a in aspects:
+            pair = a.get("pair", "")
+            type_ = a.get("type", "")
+            tight = a.get("tightness", "")
+            meaning = a.get("meaning", "")
+            out.append("• " + escape(f"{pair} ({type_}, {tight}) — {meaning}"))
+
+    num = (report.get("numerology") or {}).get("life_path") or {}
+    if num:
+        out.append("")
+        value = num.get("value")
+        comment = num.get("comment", "")
+        out.append(f"<b>Число судьбы:</b> {escape(str(value))} — {escape(str(comment))}")
+
+    recs = report.get("practical_recs") or {}
+    if recs.get("week"):
+        out.append("")
+        out.append("<b>Рекомендации на неделю:</b>\n" + "\n".join("• " + escape(str(x)) for x in recs["week"]))
+    if recs.get("month"):
+        out.append("")
+        out.append("<b>Рекомендации на месяц:</b>\n" + "\n".join("• " + escape(str(x)) for x in recs["month"]))
+    if recs.get("focus_areas"):
+        out.append("")
+        out.append("<b>Фокусы:</b> " + escape(", ".join(map(str, recs["focus_areas"]))))
+
+    notes = report.get("data_notes") or []
+    if notes:
+        out.append("")
+        out.append("<i>Примечания к данным:</i>\n" + "\n".join("• " + escape(str(x)) for x in notes))
+
+    html = "\n".join(out).strip()
+    return html or "Готово."
+
 async def generate_and_send_numerology_report(update: Update, context: ContextTypes.DEFAULT_TYPE, *, full_name: str, dob: str, life_path: int, counts: dict, lines: dict, ext: dict, order_id: int | None):
     """Build prompt, call LLM, parse JSON, save to order meta, and send nicely formatted text."""
     input_payload = {
@@ -509,6 +634,72 @@ async def generate_and_send_numerology_report(update: Update, context: ContextTy
             await update.message.reply_text(f"LLM error: {e}")
         else:
             await update.message.reply_text("Во время генерации отчёта произошла ошибка. Попробуем ещё раз чуть позже.")
+
+
+# --- Natalka PRO: Generate and send natal report via LLM ---
+async def generate_and_send_natal_report(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+    *, full_name: str, date: str, time: str | None, city: str, order_id: int | None
+):
+    """Build prompt for Natalka PRO, call LLM, parse JSON, store meta, send HTML."""
+    # Даём модели якорь — число судьбы
+    try:
+        life_path = calc_life_path_ddmmyyyy(date)
+    except Exception:
+        life_path = None
+
+    input_payload = {
+        "full_name": full_name,
+        "date": date,
+        "time": time,
+        "city": city,
+        "life_path": life_path,
+    }
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": NATAL_DEVELOPER_PROMPT},
+        {"role": "user", "content": build_user_prompt_for_natal(input_payload)},
+    ]
+
+    try:
+        raw = await _llm_chat_completion(messages)
+        content = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        report = _try_parse_json_from_text(content)
+        if not report:
+            if order_id:
+                try:
+                    update_order(order_id, meta_merge={"natal_llm_raw": (content or "")[:4000]})
+                except Exception:
+                    pass
+            # Сообщим админу сниппет, пользователю — мягкое сообщение
+            try:
+                is_admin = ADMIN_ID and update.effective_user and str(update.effective_user.id) == str(ADMIN_ID)
+            except Exception:
+                is_admin = False
+            if is_admin:
+                snippet = (content or "")
+                if len(snippet) > 800:
+                    snippet = snippet[:800] + "…"
+                await update.message.reply_text("Parse error (Natal): LLM вернул не-JSON. Сниппет:\n" + snippet)
+            await update.message.reply_text("Не удалось собрать натальный отчёт. Попробуйте ещё раз позже.")
+            return
+
+        if order_id:
+            update_order(order_id, meta_merge={"natal_llm_report": report})
+
+        html_text = _render_natal_report_html(report)
+        await update.message.reply_text(html_text, parse_mode="HTML")
+    except Exception as e:
+        log.exception("Natal LLM error: %s", e)
+        try:
+            is_admin = ADMIN_ID and update.effective_user and str(update.effective_user.id) == str(ADMIN_ID)
+        except Exception:
+            is_admin = False
+        if is_admin:
+            await update.message.reply_text(f"LLM error (Natal): {e}")
+        else:
+            await update.message.reply_text("Во время генерации натального отчёта произошла ошибка. Попробуем позже.")
 
 # --- Нумерология: расчёт числа судьбы + короткие трактовки ---
 NUM_DESCRIPTIONS = {
@@ -1070,9 +1261,22 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• Дата: `{data['natal_date']}`\n"
                 f"• Время: `{data['natal_time'] or 'неизвестно'}`\n"
                 f"• Город: `{data['natal_city']}`\n\n"
-                "На следующем шаге подключим точные расчёты и пришлём разбор.",
+                "Готовлю ваш разбор…",
                 parse_mode="Markdown",
             )
+
+            # Генерация подробного отчёта через LLM
+            try:
+                await generate_and_send_natal_report(
+                    update, context,
+                    full_name=data["full_name"],
+                    date=data["natal_date"],
+                    time=data["natal_time"],
+                    city=data["natal_city"],
+                    order_id=order_id,
+                )
+            except Exception as e:
+                log.exception("Failed to generate Natal LLM report: %s", e)
             return
 
         if state == NATAL_DATE:
