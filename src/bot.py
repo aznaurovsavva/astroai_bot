@@ -30,12 +30,12 @@ async def _mistral_vision_analyze_palm(prompt_text: str, image_url: str, model: 
         "model": model,
         "temperature": 0.6,
         "top_p": 0.9,
-        "max_tokens": 900,
+        "max_tokens": 550,
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "input_text", "text": prompt_text},
-                {"type": "input_image", "image_url": image_url}
+                {"type": "text", "text": prompt_text},
+                {"type": "image_url", "image_url": image_url}
             ],
         }],
         "response_format": {"type": "json_object"},
@@ -892,14 +892,14 @@ async def generate_and_send_palm_report(
             if image_url:
                 if user_context and len(user_context) > 700:
                     user_context = user_context[:700] + "…"
+                vision_prompt = (
+                    "Ты практикующий хиромант. На основе ПРИЛОЖЕННОГО ФОТО правой ладони выполни визуальный анализ. "
+                    f"Имя: {full_name or ''}. Доминирующая рука: {dominant_hand or ''}. "
+                    f"Контекст: {user_context or ''}. "
+                    "Верни СТРОГО один минифицированный JSON (в одну строку) по следующей схеме. "
+                ) + PALM_DEVELOPER_PROMPT
                 raw = await _mistral_vision_analyze_palm(
-                    build_user_prompt_for_palm(
-                        full_name=full_name,
-                        dominant_hand=dominant_hand,
-                        user_context=user_context,
-                        has_photo=True,
-                        tg_file_id=tg_file_id,
-                    ),
+                    vision_prompt,
                     image_url,
                     model=MISTRAL_VISION_MODEL,
                 )
