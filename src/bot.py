@@ -50,8 +50,8 @@ async def _mistral_vision_analyze_palm(prompt_text: str, data_url: str, model: s
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "text", "text": prompt_text},
-                {"type": "image_url", "image_url": {"url": data_url}}
+                {"type": "input_text", "text": prompt_text},
+                {"type": "input_image", "image_url": data_url}
             ],
         }],
         "response_format": {"type": "json_object"},
@@ -904,7 +904,7 @@ async def generate_and_send_palm_report(
     vision_enabled = bool(PALM_VISION)
     if vision_enabled and tg_file_id and VISION_PROVIDER == "mistral" and MISTRAL_API_KEY:
         try:
-            data_url = _download_telegram_file_as_data_url(tg_file_id)
+            data_url = await asyncio.to_thread(_download_telegram_file_as_data_url, tg_file_id)
             if data_url:
                 raw = await _mistral_vision_analyze_palm(
                     build_user_prompt_for_palm(
