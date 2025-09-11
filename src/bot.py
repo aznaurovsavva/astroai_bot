@@ -1,6 +1,6 @@
-import base64
-def _download_telegram_file_as_data_url(file_id: str) -> str | None:
-    """Download a Telegram file by file_id using HTTP and return a base64 data URL."""
+
+def _get_telegram_file_url(file_id: str) -> str | None:
+    """Resolve Telegram file_id to a public file URL that Mistral can fetch directly."""
     try:
         # Resolve file_path
         info = requests.get(
@@ -14,29 +14,13 @@ def _download_telegram_file_as_data_url(file_id: str) -> str | None:
         file_path = info.json().get("result", {}).get("file_path")
         if not file_path:
             return None
-
-        # Download bytes
-        resp = requests.get(
-            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}",
-            timeout=30,
-        )
-        if resp.status_code // 100 != 2:
-            log.warning("file download failed: %s %s", resp.status_code, resp.text[:200])
-            return None
-        content = resp.content
-
-        mime = "image/jpeg"
-        lp = (file_path or "").lower()
-        if lp.endswith(".png"): mime = "image/png"
-        elif lp.endswith(".webp"): mime = "image/webp"
-
-        b64 = base64.b64encode(content).decode("ascii")
-        return f"data:{mime};base64,{b64}"
+        # Return direct file URL (small payload; avoids giant base64 data URI)
+        return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
     except Exception as e:
-        log.warning("_download_telegram_file_as_data_url error: %s", e)
+        log.warning("_get_telegram_file_url error: %s", e)
         return None
 
-async def _mistral_vision_analyze_palm(prompt_text: str, data_url: str, model: str = "pixtral-12b") -> dict:
+async def _mistral_vision_analyze_palm(prompt_text: str, image_url: str, model: str = "pixtral-12b") -> dict:
     url = "https://api.mistral.ai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {MISTRAL_API_KEY}",
@@ -46,12 +30,12 @@ async def _mistral_vision_analyze_palm(prompt_text: str, data_url: str, model: s
         "model": model,
         "temperature": 0.6,
         "top_p": 0.9,
-        "max_tokens": 1400,
+        "max_tokens": 900,
         "messages": [{
             "role": "user",
             "content": [
                 {"type": "input_text", "text": prompt_text},
-                {"type": "input_image", "image_url": data_url}
+                {"type": "input_image", "image_url": image_url}
             ],
         }],
         "response_format": {"type": "json_object"},
@@ -904,8 +888,10 @@ async def generate_and_send_palm_report(
     vision_enabled = bool(PALM_VISION)
     if vision_enabled and tg_file_id and VISION_PROVIDER == "mistral" and MISTRAL_API_KEY:
         try:
-            data_url = await asyncio.to_thread(_download_telegram_file_as_data_url, tg_file_id)
-            if data_url:
+            image_url = await asyncio.to_thread(_get_telegram_file_url, tg_file_id)
+            if image_url:
+                if user_context and len(user_context) > 700:
+                    user_context = user_context[:700] + "…"
                 raw = await _mistral_vision_analyze_palm(
                     build_user_prompt_for_palm(
                         full_name=full_name,
@@ -914,7 +900,7 @@ async def generate_and_send_palm_report(
                         has_photo=True,
                         tg_file_id=tg_file_id,
                     ),
-                    data_url,
+                    image_url,
                     model=MISTRAL_VISION_MODEL,
                 )
                 content = (raw.get("choices") or [{}])[0].get("message", {}).get("content", "")
