@@ -30,7 +30,7 @@ async def _mistral_vision_analyze_palm(prompt_text: str, image_url: str, model: 
         "model": model,
         "temperature": 0.6,
         "top_p": 0.9,
-        "max_tokens": 550,
+        "max_tokens": 720,
         "messages": [{
             "role": "user",
             "content": [
@@ -278,16 +278,19 @@ def build_user_prompt_for_natal(input_payload: dict) -> str:
 
 PALM_DEVELOPER_PROMPT = (
     "Верните СТРОГО один JSON-объект ТОЛЬКО в теле ответа, без markdown/комментариев. "
-    "JSON ДОЛЖЕН быть минифицирован (в одну строку). Структура:"
+    "JSON ДОЛЖЕН быть минифицирован (в одну строку). Строго избегайте построчного/помесячного перечня букв — "
+    "не раскладывайте текст по символам. Все списки возвращайте как массивы строк. "
+    "Для каждой линии (сердца, головы, жизни) добавьте 3–5 детализированных наблюдений. Для холмов укажите степень выраженности и значение.\n"
+    "Структура:"
     "{"
     "\"title\":str,"
     "\"summary\":str,"
     "\"hand_overview\":{\"dominant\":(str|null),\"general\":[str]},"
     "\"lines\":{"
       "\"heart\":{\"tone\":str,\"details\":[str]},"
-      "\"head\":  {\"tone\":str,\"details\":[str]},"
-      "\"life\":  {\"tone\":str,\"details\":[str]},"
-      "\"fate\":  {\"present\":bool,\"details\":[str]}"
+      "\"head\":{\"tone\":str,\"details\":[str]},"
+      "\"life\":{\"tone\":str,\"details\":[str]},"
+      "\"fate\":{\"present\":bool,\"details\":[str]}"
     "},"
     "\"mounts\":[{\"name\":str,\"expression\":str,\"comment\":str}],"
     "\"patterns\":[str],"
@@ -522,6 +525,47 @@ def _try_parse_json_from_text(text: str) -> dict:
         return {}
 
 
+# --- Helper: Coerce model output to clean list of strings ---
+def _ensure_list(val) -> list[str]:
+    """Coerce model output to a list of clean strings and avoid char-by-char artifacts."""
+    if not val:
+        return []
+    if isinstance(val, list):
+        return [str(x).strip() for x in val if str(x).strip()]
+    txt = str(val)
+    txt = txt.replace("•", "\n").replace("–", "-")
+    parts = [p.strip(" .,;\t") for p in re.split(r"[\n;]+", txt) if p.strip()]
+    return parts
+
+# --- Helper: split long HTML into safe Telegram chunks ---
+def _split_html_for_telegram(html: str, limit: int = 3500) -> list[str]:
+    """Split long HTML text into chunks under Telegram's ~4096 chars. We keep boundaries on line breaks."""
+    if not html:
+        return []
+    html = html.strip()
+    if len(html) <= limit:
+        return [html]
+    parts = []
+    buf = []
+    cur = 0
+    for line in html.split("\n"):
+        # +1 for the newline that we re-add when joining
+        add_len = len(line) + (1 if buf else 0)
+        if cur + add_len > limit:
+            parts.append("\n".join(buf))
+            buf = [line]
+            cur = len(line)
+        else:
+            if buf:
+                buf.append(line)
+            else:
+                buf = [line]
+            cur += add_len
+    if buf:
+        parts.append("\n".join(buf))
+    return parts
+
+
 def _render_report_html(report: dict) -> str:
     """Render LLM JSON report to HTML-safe text to avoid Telegram Markdown parse errors."""
     parts: list[str] = []
@@ -567,20 +611,23 @@ def _render_report_html(report: dict) -> str:
 
     pr = report.get("practical_recs", {})
     if pr:
-        if pr.get('week'):
+        week = _ensure_list(pr.get('week'))
+        month = _ensure_list(pr.get('month'))
+        focus = _ensure_list(pr.get('focus_areas'))
+        if week:
             parts.append("")
-            parts.append("<b>Рекомендации на неделю:</b>\n" + "\n".join(["• " + escape(str(x)) for x in pr['week']]))
-        if pr.get('month'):
+            parts.append("<b>Рекомендации на неделю:</b>\n" + "\n".join("• " + escape(x) for x in week))
+        if month:
             parts.append("")
-            parts.append("<b>Рекомендации на месяц:</b>\n" + "\n".join(["• " + escape(str(x)) for x in pr['month']]))
-        if pr.get('focus_areas'):
+            parts.append("<b>Рекомендации на месяц:</b>\n" + "\n".join("• " + escape(x) for x in month))
+        if focus:
             parts.append("")
-            parts.append("<b>Фокусы:</b> " + escape(", ".join(map(str, pr['focus_areas']))))
+            parts.append("<b>Фокусы:</b> " + escape(", ".join(focus)))
 
-    dn = report.get("data_notes") or []
+    dn = _ensure_list(report.get("data_notes"))
     if dn:
         parts.append("")
-        parts.append("<i>Примечания к данным:</i>\n" + "\n".join(["• " + escape(str(x)) for x in dn]))
+        parts.append("<i>Примечания к данным:</i>\n" + "\n".join("• " + escape(x) for x in dn))
 
     # Join with double breaks between sections
     html_text = "\n".join(parts)
@@ -653,20 +700,23 @@ def _render_natal_report_html(report: dict) -> str:
         out.append(f"<b>Число судьбы:</b> {escape(str(value))} — {escape(str(comment))}")
 
     recs = report.get("practical_recs") or {}
-    if recs.get("week"):
+    week = _ensure_list(recs.get("week"))
+    month = _ensure_list(recs.get("month"))
+    focus = _ensure_list(recs.get("focus_areas"))
+    if week:
         out.append("")
-        out.append("<b>Рекомендации на неделю:</b>\n" + "\n".join("• " + escape(str(x)) for x in recs["week"]))
-    if recs.get("month"):
+        out.append("<b>Рекомендации на неделю:</b>\n" + "\n".join("• " + escape(x) for x in week))
+    if month:
         out.append("")
-        out.append("<b>Рекомендации на месяц:</b>\n" + "\n".join("• " + escape(str(x)) for x in recs["month"]))
-    if recs.get("focus_areas"):
+        out.append("<b>Рекомендации на месяц:</b>\n" + "\n".join("• " + escape(x) for x in month))
+    if focus:
         out.append("")
-        out.append("<b>Фокусы:</b> " + escape(", ".join(map(str, recs["focus_areas"]))))
+        out.append("<b>Фокусы:</b> " + escape(", ".join(focus)))
 
-    notes = report.get("data_notes") or []
+    notes = _ensure_list(report.get("data_notes"))
     if notes:
         out.append("")
-        out.append("<i>Примечания к данным:</i>\n" + "\n".join("• " + escape(str(x)) for x in notes))
+        out.append("<i>Примечания к данным:</i>\n" + "\n".join("• " + escape(x) for x in notes))
 
     html = "\n".join(out).strip()
     return html or "Готово."
@@ -689,12 +739,12 @@ def _render_palm_report_html(report: dict) -> str:
     if hov:
         out.append("")
         dom = hov.get("dominant")
-        gen = hov.get("general") or []
+        gen = _ensure_list(hov.get("general"))
         if dom:
             out.append(f"<b>Ведущая рука:</b> {escape(str(dom))}")
         if gen:
             out.append("<b>Общее впечатление:</b>")
-            out.extend("• " + escape(str(x)) for x in gen)
+            out.extend("• " + escape(x) for x in gen)
 
     lines = report.get("lines") or {}
     if lines:
@@ -703,21 +753,21 @@ def _render_palm_report_html(report: dict) -> str:
         def _block(name_ru: str, key: str):
             node = lines.get(key) or {}
             tone = node.get("tone", "")
-            dets = node.get("details") or []
+            dets = _ensure_list(node.get("details"))
             if tone or dets:
                 out.append(f"• {name_ru}: {escape(str(tone))}")
                 for d in dets:
-                    out.append("   — " + escape(str(d)))
+                    out.append("   — " + escape(d))
         _block("Сердца", "heart")
         _block("Головы", "head")
         _block("Жизни", "life")
         fate = lines.get("fate") or {}
         if fate:
             present = fate.get("present")
-            dets = fate.get("details") or []
+            dets = _ensure_list(fate.get("details"))
             out.append("• Судьбы: " + ("есть" if present else "не выражена/неопределима"))
             for d in dets:
-                out.append("   — " + escape(str(d)))
+                out.append("   — " + escape(d))
 
     mounts = report.get("mounts") or []
     if mounts:
@@ -726,28 +776,31 @@ def _render_palm_report_html(report: dict) -> str:
         for m in mounts:
             out.append("• " + escape(f"{m.get('name','')}: {m.get('expression','')} — {m.get('comment','')}"))
 
-    pats = report.get("patterns") or []
+    pats = _ensure_list(report.get("patterns"))
     if pats:
         out.append("")
         out.append("<b>Особые рисунки:</b>")
-        out.extend("• " + escape(str(x)) for x in pats)
+        out.extend("• " + escape(x) for x in pats)
 
-    recs = report.get("practical_recs") or []
+    recs = report.get("practical_recs") or {}
     if isinstance(recs, dict):
-        if recs.get("week"):
+        week = _ensure_list(recs.get("week"))
+        month = _ensure_list(recs.get("month"))
+        focus = _ensure_list(recs.get("focus_areas"))
+        if week:
             out.append("")
-            out.append("<b>Рекомендации на неделю:</b>\n" + "\n".join("• " + escape(str(x)) for x in recs["week"]))
-        if recs.get("month"):
+            out.append("<b>Рекомендации на неделю:</b>\n" + "\n".join("• " + escape(x) for x in week))
+        if month:
             out.append("")
-            out.append("<b>Рекомендации на месяц:</b>\n" + "\n".join("• " + escape(str(x)) for x in recs["month"]))
-        if recs.get("focus_areas"):
+            out.append("<b>Рекомендации на месяц:</b>\n" + "\n".join("• " + escape(x) for x in month))
+        if focus:
             out.append("")
-            out.append("<b>Фокусы:</b> " + escape(", ".join(map(str, recs["focus_areas"]))))
+            out.append("<b>Фокусы:</b> " + escape(", ".join(focus)))
 
-    notes = report.get("data_notes") or []
+    notes = _ensure_list(report.get("data_notes"))
     if notes:
         out.append("")
-        out.append("<i>Примечания:</i>\n" + "\n".join("• " + escape(str(x)) for x in notes))
+        out.append("<i>Примечания:</i>\n" + "\n".join("• " + escape(x) for x in notes))
 
     html = "\n".join(out).strip()
     return html or "Готово."
@@ -798,7 +851,8 @@ async def generate_and_send_numerology_report(update: Update, context: ContextTy
             update_order(order_id, meta_merge={"llm_report": report})
         # Render and send
         html_text = _render_report_html(report)
-        await update.message.reply_text(html_text, parse_mode="HTML")
+        for chunk in _split_html_for_telegram(html_text):
+            await update.message.reply_text(chunk, parse_mode="HTML")
     except Exception as e:
         log.exception("LLM error: %s", e)
         # если пишет админ — покажем тех. причину
@@ -865,7 +919,8 @@ async def generate_and_send_natal_report(
             update_order(order_id, meta_merge={"natal_llm_report": report})
 
         html_text = _render_natal_report_html(report)
-        await update.message.reply_text(html_text, parse_mode="HTML")
+        for chunk in _split_html_for_telegram(html_text):
+            await update.message.reply_text(chunk, parse_mode="HTML")
     except Exception as e:
         log.exception("Natal LLM error: %s", e)
         try:
@@ -912,7 +967,8 @@ async def generate_and_send_palm_report(
                             "vision": {"provider": "mistral", "model": MISTRAL_VISION_MODEL},
                         })
                     html_text = _render_palm_report_html(report)
-                    await update.message.reply_text(html_text, parse_mode="HTML")
+                    for chunk in _split_html_for_telegram(html_text):
+                        await update.message.reply_text(chunk, parse_mode="HTML")
                     return
         except Exception as e:
             log.warning("Palm vision path failed: %s", e)
@@ -955,7 +1011,8 @@ async def generate_and_send_palm_report(
             update_order(order_id, status="done", meta_merge={"palm_llm_report": report, "palm_photo_file_id": tg_file_id})
 
         html_text = _render_palm_report_html(report)
-        await update.message.reply_text(html_text, parse_mode="HTML")
+        for chunk in _split_html_for_telegram(html_text):
+            await update.message.reply_text(chunk, parse_mode="HTML")
     except Exception as e:
         log.exception("Palm LLM error: %s", e)
         try:
