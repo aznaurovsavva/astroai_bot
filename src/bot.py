@@ -570,6 +570,17 @@ def _split_html_for_telegram(html: str, limit: int = 3500) -> list[str]:
         parts.append("\n".join(buf))
     return parts
 
+# --- Helper: quick "Back to menu" button ---
+BACK_MENU_KB = InlineKeyboardMarkup(
+    [[InlineKeyboardButton("← В главное меню", callback_data="back_home")]]
+)
+
+async def _send_back_menu(update: Update, text: str = "Можешь вернуться в главное меню:"):
+    try:
+        await update.message.reply_text(text, reply_markup=BACK_MENU_KB)
+    except Exception:
+        await update.effective_chat.send_message(text, reply_markup=BACK_MENU_KB)
+
 
 def _render_report_html(report: dict) -> str:
     """Render LLM JSON report to HTML-safe text to avoid Telegram Markdown parse errors."""
@@ -858,6 +869,7 @@ async def generate_and_send_numerology_report(update: Update, context: ContextTy
         html_text = _render_report_html(report)
         for chunk in _split_html_for_telegram(html_text):
             await update.message.reply_text(chunk, parse_mode="HTML")
+        await _send_back_menu(update)
     except Exception as e:
         log.exception("LLM error: %s", e)
         # если пишет админ — покажем тех. причину
@@ -926,6 +938,7 @@ async def generate_and_send_natal_report(
         html_text = _render_natal_report_html(report)
         for chunk in _split_html_for_telegram(html_text):
             await update.message.reply_text(chunk, parse_mode="HTML")
+        await _send_back_menu(update)
     except Exception as e:
         log.exception("Natal LLM error: %s", e)
         try:
@@ -975,6 +988,7 @@ async def generate_and_send_palm_report(
                     html_text = _render_palm_report_html(report)
                     for chunk in _split_html_for_telegram(html_text):
                         await update.message.reply_text(chunk, parse_mode="HTML")
+                    await _send_back_menu(update)
                     return
         except Exception as e:
             log.warning("Palm vision path failed: %s", e)
@@ -1019,6 +1033,7 @@ async def generate_and_send_palm_report(
         html_text = _render_palm_report_html(report)
         for chunk in _split_html_for_telegram(html_text):
             await update.message.reply_text(chunk, parse_mode="HTML")
+        await _send_back_menu(update)
     except Exception as e:
         log.exception("Palm LLM error: %s", e)
         try:
