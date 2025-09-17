@@ -106,6 +106,16 @@ def init_db():
       updated_at    TEXT
     )
   """)
+  cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS feedback(
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    INTEGER,
+      text       TEXT,
+      created_at TEXT
+    )
+    """
+  )
   con.commit(); con.close()
 
 def upsert_profile(user_id: int, full_name: str = "", username: str = "", lang: str = ""):
@@ -151,6 +161,20 @@ def update_order(order_id: int, *, status: str | None = None, meta_merge: dict |
   cur.execute(f"UPDATE orders SET {', '.join(sets)} WHERE id=?", params)
   con.commit(); con.close()
 
+# --- Helper to store user feedback ---
+def create_feedback(user_id: int, text: str) -> int:
+    now = datetime.utcnow().isoformat()
+    con = _conn(); cur = con.cursor()
+    cur.execute(
+        """
+        INSERT INTO feedback(user_id, text, created_at)
+        VALUES(?,?,?)
+        """,
+        (user_id, text, now)
+    )
+    fid = cur.lastrowid
+    con.commit(); con.close()
+    return fid
 # --- Helper to fetch recent orders ---
 def fetch_last_orders(limit: int = 5):
     con = _conn(); cur = con.cursor()
@@ -182,6 +206,7 @@ NATAL_ALL  = "natal_all"
 PALM_PHOTO = "palm_photo"
 PALM_CTX   = "palm_ctx"   # <— новый стейт для короткого текстового контекста после фото
 NUM_INPUT  = "num_input"
+FEEDBACK_WAIT = "feedback_wait"
 
 # Карта сумм для записи в заказы
 
@@ -1315,6 +1340,7 @@ MENU = [
     [InlineKeyboardButton("🔢 Нумерология", callback_data="num")],
     [InlineKeyboardButton("🪬 Хиромантия", callback_data="palm")],
     [InlineKeyboardButton("🌌 Натальная карта Pro", callback_data="natal")],
+    [InlineKeyboardButton("📝 Обратная связь", callback_data="feedback")],
 ]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1533,6 +1559,17 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Натальная карта + дома + аспекты + нумерология (≈ 500 ₽).",
                 "NATAL_500", PRICE_NATAL
             )
+    elif q.data == "feedback":
+        # Запускаем флоу обратной связи
+        ud = context.user_data
+        ud.clear()
+        ud["flow"] = "feedback"; ud["state"] = FEEDBACK_WAIT
+        await q.message.chat.send_message(
+            "📝 Напишите сюда вашу обратную связь — отзыв, предложение или сообщение об ошибке.\n\n"
+            "Постарайтесь уложиться в 2000 символов. Если передумаете — /cancel.",
+            parse_mode="Markdown",
+        )
+        return
     else:
         await q.edit_message_text("Выбирай услугу ⤴️")
 
@@ -1604,6 +1641,43 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ud = context.user_data
     flow = ud.get("flow"); state = ud.get("state")
     if not flow:
+        return
+
+    # ---------- Обратная связь ----------
+    if flow == "feedback" and state == FEEDBACK_WAIT:
+        fb_text = (text or "").strip()
+        if not fb_text:
+            await update.message.reply_text("Пожалуйста, пришлите текст отзыва.")
+            return
+        # Ограничим длину
+        if len(fb_text) > 2000:
+            fb_text = fb_text[:2000] + "…"
+        # Сохраним в БД
+        try:
+            create_feedback(update.effective_user.id, fb_text)
+        except Exception as e:
+            log.warning("Failed to save feedback: %s", e)
+        # Уведомим админа
+        try:
+            if ADMIN_ID:
+                admin_chat_id = int(ADMIN_ID)
+                u = update.effective_user
+                uname = f"@{u.username}" if u.username else "—"
+                await update.effective_chat.bot.send_message(
+                    chat_id=admin_chat_id,
+                    text=(
+                        "🔔 Новый отзыв\n"
+                        f"От: {u.full_name} ({uname}), id: {u.id}\n\n"
+                        f"{fb_text}"
+                    )
+                )
+        except Exception as e:
+            log.warning("Failed to notify admin about feedback: %s", e)
+        # Ответ пользователю
+        await update.message.reply_text("Спасибо за обратную связь! Это помогает нам становиться лучше 🙌")
+        # Сброс состояния и кнопка в меню
+        ud.clear()
+        await _send_back_menu(update)
         return
 
     # ---------- Наталка ----------
