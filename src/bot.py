@@ -1663,16 +1663,21 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 admin_chat_id = int(ADMIN_ID)
                 u = update.effective_user
                 uname = f"@{u.username}" if u.username else "—"
-                await update.effective_chat.bot.send_message(
-                    chat_id=admin_chat_id,
-                    text=(
-                        "🔔 Новый отзыв\n"
-                        f"От: {u.full_name} ({uname}), id: {u.id}\n\n"
-                        f"{fb_text}"
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_chat_id,
+                        text=(
+                            "🔔 Новый отзыв\n"
+                            f"От: {u.full_name} ({uname}), id: {u.id}\n\n"
+                            f"{fb_text}"
+                        )
                     )
-                )
-        except Exception as e:
-            log.warning("Failed to notify admin about feedback: %s", e)
+                except Exception as e_send:
+                    log.warning("Primary admin notify failed, trying forward: %s", e_send)
+                    try:
+                        await update.message.forward(admin_chat_id)
+                    except Exception as e_fwd:
+                        log.warning("Admin forward also failed: %s", e_fwd)
         # Ответ пользователю
         await update.message.reply_text("Спасибо за обратную связь! Это помогает нам становиться лучше 🙌")
         # Сброс состояния и кнопка в меню
