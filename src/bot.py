@@ -1652,6 +1652,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Ограничим длину
         if len(fb_text) > 2000:
             fb_text = fb_text[:2000] + "…"
+        # Ответ пользователю и сброс состояния (user_data очищаем сразу)
+        await update.message.reply_text("Спасибо за обратную связь! Это помогает нам становиться лучше 🙌")
+        ud.clear()
         # Сохраним в БД
         try:
             create_feedback(update.effective_user.id, fb_text)
@@ -1678,10 +1681,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await update.message.forward(admin_chat_id)
                     except Exception as e_fwd:
                         log.warning("Admin forward also failed: %s", e_fwd)
-        # Ответ пользователю
-        await update.message.reply_text("Спасибо за обратную связь! Это помогает нам становиться лучше 🙌")
-        # Сброс состояния и кнопка в меню
-        ud.clear()
+        except Exception as e:
+            log.warning("Failed to notify admin about feedback: %s", e)
         await _send_back_menu(update)
         return
 
