@@ -116,7 +116,32 @@ def init_db():
     )
     """
   )
+  # Метаданные приложения (например, точка сброса статистики)
+  cur.execute("""
+    CREATE TABLE IF NOT EXISTS app_meta(
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    )
+  """)
   con.commit(); con.close()
+
+
+# --- App meta helpers ---
+def _get_meta(key: str) -> str | None:
+    con = _conn(); cur = con.cursor()
+    cur.execute("SELECT value FROM app_meta WHERE key=?", (key,))
+    row = cur.fetchone()
+    con.close()
+    return row[0] if row else None
+
+def _set_meta(key: str, value: str):
+    con = _conn(); cur = con.cursor()
+    cur.execute(
+        "INSERT INTO app_meta(key, value) VALUES(?, ?)\n"
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value)
+    )
+    con.commit(); con.close()
 
 def upsert_profile(user_id: int, full_name: str = "", username: str = "", lang: str = ""):
   now = datetime.utcnow().isoformat()
@@ -198,6 +223,60 @@ def fetch_all_user_ids() -> list[int]:
     rows = cur.fetchall()
     con.close()
     return [r[0] for r in rows if r and r[0]]
+
+# --- Stats helpers ---
+def _profiles_count(where_sql: str = "", params: tuple = ()) -> int:
+    con = _conn(); cur = con.cursor()
+    q = "SELECT COUNT(*) FROM profiles"
+    if where_sql:
+        q += " " + where_sql
+    cur.execute(q, params)
+    n = cur.fetchone()[0] or 0
+    con.close()
+    return int(n)
+
+
+def _orders_aggregate(where_extra: str = "", params: tuple = ()) -> dict:
+    """
+    Возвращает словарь агрегатов по ОПЛАЧЕННЫМ заказам (charge_id IS NOT NULL):
+      - orders_paid   — количество оплаченных заказов
+      - xtr_sum       — сумма оплат в звёздах (amount_stars)
+      - num_paid      — оплаченные нумерологии (payload='NUM_200')
+      - palm_paid     — оплаченные хиромантии (payload='PALM_300')
+      - natal_paid    — оплаченные натальные карты (payload='NATAL_500')
+    Доп. фильтр можно передать через where_extra, например: "AND date(created_at)=date('now')".
+    """
+    con = _conn(); cur = con.cursor()
+    base = "FROM orders WHERE charge_id IS NOT NULL "
+    if where_extra:
+        base += where_extra + " "
+
+    # всего оплаченных
+    cur.execute(f"SELECT COUNT(*) {base}", params)
+    total_paid = cur.fetchone()[0] or 0
+
+    # сумма звёзд
+    cur.execute(f"SELECT COALESCE(SUM(amount_stars),0) {base}", params)
+    total_xtr = cur.fetchone()[0] or 0
+
+    # по услугам
+    cur.execute(f"SELECT COUNT(*) {base} AND payload='NUM_200'", params)
+    num_paid = cur.fetchone()[0] or 0
+
+    cur.execute(f"SELECT COUNT(*) {base} AND payload='PALM_300'", params)
+    palm_paid = cur.fetchone()[0] or 0
+
+    cur.execute(f"SELECT COUNT(*) {base} AND payload='NATAL_500'", params)
+    natal_paid = cur.fetchone()[0] or 0
+
+    con.close()
+    return {
+        "orders_paid": int(total_paid),
+        "xtr_sum": int(total_xtr),
+        "num_paid": int(num_paid),
+        "palm_paid": int(palm_paid),
+        "natal_paid": int(natal_paid),
+    }
 
 # --- Цены в Stars (XTR). Эквиваленты в тексте описания. ---
 PRICE_NUM   = 90   # ~200 ₽
@@ -1489,6 +1568,89 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Рассылка завершена. Отправлено: {sent}, ошибок: {failed}.")
 
+
+
+# --- Admin stats: /stats (summary) ---
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    try:
+        admin_id_val = int(ADMIN_ID)
+    except Exception:
+        admin_id_val = 0
+    if not admin_id_val or int(u.id) != admin_id_val:
+        await update.message.reply_text("Недостаточно прав.")
+        return
+
+    # За всё время
+    users_total = _profiles_count()
+    agg_all = _orders_aggregate()
+
+    # С момента сброса (если был)
+    reset_iso = _get_meta("stats_reset_at")
+    since_block = ""
+    if reset_iso:
+        agg_since = _orders_aggregate("AND datetime(created_at) >= datetime(?)", (reset_iso,))
+        since_block = (
+            f"*С момента сброса* (с {reset_iso} UTC):\n"
+            f"• Пользователей нажало /start: {users_total}\n"
+            f"• Оплаченных услуг: {agg_since['orders_paid']}\n"
+            f"  — Нумерология: {agg_since['num_paid']}\n"
+            f"  — Хиромантия: {agg_since['palm_paid']}\n"
+            f"  — Натальные карты: {agg_since['natal_paid']}\n"
+            f"• Сумма оплат: {agg_since['xtr_sum']} ⭐\n\n"
+        )
+
+    text = (
+        (since_block if since_block else "") +
+        "*За всё время:*\n"
+        f"• Пользователей нажало /start: {users_total}\n"
+        f"• Оплаченных услуг: {agg_all['orders_paid']}\n"
+        f"  — Нумерология: {agg_all['num_paid']}\n"
+        f"  — Хиромантия: {agg_all['palm_paid']}\n"
+        f"  — Натальные карты: {agg_all['natal_paid']}\n"
+        f"• Сумма оплат: {agg_all['xtr_sum']} ⭐"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# --- Admin stats: /stats_today (UTC day) ---
+async def stats_today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    try:
+        admin_id_val = int(ADMIN_ID)
+    except Exception:
+        admin_id_val = 0
+    if not admin_id_val or int(u.id) != admin_id_val:
+        await update.message.reply_text("Недостаточно прав.")
+        return
+
+    # За текущие сутки по UTC
+    agg = _orders_aggregate("AND date(created_at)=date('now')")
+    users_total = _profiles_count()
+    text = (
+        "*За сегодня (UTC):*\n"
+        f"• Пользователей нажало /start (всего в базе): {users_total}\n"
+        f"• Оплаченных услуг: {agg['orders_paid']}\n"
+        f"  — Нумерология: {agg['num_paid']}\n"
+        f"  — Хиромантия: {agg['palm_paid']}\n"
+        f"  — Натальные карты: {agg['natal_paid']}\n"
+        f"• Сумма оплат: {agg['xtr_sum']} ⭐"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# --- Admin stats: /stats_reset (set reset point) ---
+async def stats_reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    try:
+        admin_id_val = int(ADMIN_ID)
+    except Exception:
+        admin_id_val = 0
+    if not admin_id_val or int(u.id) != admin_id_val:
+        await update.message.reply_text("Недостаточно прав.")
+        return
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    _set_meta("stats_reset_at", now)
+    await update.message.reply_text(f"Точка отсчёта статистики обновлена на {now} UTC.")
+
 # Универсальная отправка инвойса в Stars
 async def send_stars_invoice(
     update_or_query, context: ContextTypes.DEFAULT_TYPE,
@@ -1999,6 +2161,9 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+    app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("stats_today", stats_today_cmd))
+    app.add_handler(CommandHandler("stats_reset", stats_reset_cmd))
 
     log.info("Bot is starting with long polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
