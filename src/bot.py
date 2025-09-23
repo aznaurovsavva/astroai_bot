@@ -191,6 +191,14 @@ def fetch_last_orders(limit: int = 5):
     con.close()
     return rows
 
+# --- Helper to fetch all user_ids from profiles ---
+def fetch_all_user_ids() -> list[int]:
+    con = _conn(); cur = con.cursor()
+    cur.execute("SELECT user_id FROM profiles ORDER BY user_id ASC")
+    rows = cur.fetchall()
+    con.close()
+    return [r[0] for r in rows if r and r[0]]
+
 # --- Цены в Stars (XTR). Эквиваленты в тексте описания. ---
 PRICE_NUM   = 90   # ~200 ₽
 PRICE_PALM  = 130   # ~300 ₽
@@ -1442,6 +1450,45 @@ async def orders_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• #{oid} | user:{uid} | {payload} {amount}⭐ | {status} | {date}")
     await update.message.reply_text("\n".join(lines))
 
+# --- Admin command: broadcast message to all users ---
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    # Проверка прав администратора (аналогично orders_last)
+    try:
+        admin_id_val = int(ADMIN_ID)
+    except Exception:
+        admin_id_val = 0
+    if not admin_id_val or int(u.id) != admin_id_val:
+        await update.message.reply_text("Недостаточно прав.")
+        return
+
+    # Текст для рассылки: либо аргументы команды, либо текст ответа на сообщение
+    msg = " ".join(context.args).strip() if context.args else ""
+    if not msg and update.message and update.message.reply_to_message:
+        msg = (update.message.reply_to_message.text or "").strip()
+    if not msg:
+        await update.message.reply_text(
+            "Использование:\n/broadcast ТЕКСТ\nили ответьте командой /broadcast на сообщение, которое хотите разослать.")
+        return
+
+    user_ids = fetch_all_user_ids()
+    if not user_ids:
+        await update.message.reply_text("В базе нет пользователей для рассылки.")
+        return
+
+    sent = 0; failed = 0
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(chat_id=uid, text=msg)
+            sent += 1
+            # Небольшая пауза, чтобы не упереться в лимиты Telegram
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            failed += 1
+            log.warning("Broadcast to %s failed: %s", uid, e)
+
+    await update.message.reply_text(f"Рассылка завершена. Отправлено: {sent}, ошибок: {failed}.")
+
 # Универсальная отправка инвойса в Stars
 async def send_stars_invoice(
     update_or_query, context: ContextTypes.DEFAULT_TYPE,
@@ -1477,7 +1524,7 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "num":
         caption_num = (
             "🔢 *Нумерология*\n\n"
-            "Числа — это язык, на котором Вселенная шепчет о наших дарах и уроках. Я рассчитаю ключевые числа (судьбы, души, личности, имени) и разложу по полочкам: сильные стороны, зоны роста и практические шаги.\n\n"
+            "Числа — это язык, на котором Вселенная шепчет о наших дарах и уроках. Мы рассчитаем ключевые числа (судьбы, души, личности, имени) и разложим по полочкам: сильные стороны, зоны роста и практические шаги.\n\n"
             "Что ты получишь:\n"
             "• Краткий портрет на 3–4 абзаца;\n"
             "• Разбор каждого числа;\n"
@@ -1488,7 +1535,7 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data == "palm":
         caption_palm = (
             "🪬 *Хиромантия*\n\n"
-            "Ладонь — живой дневник судьбы. По фото правой руки я рассмотрю линии сердца, головы и жизни, холмы и общий рисунок, чтобы мягко подсветить твои таланты и текущие вызовы.\n\n"
+            "Ладонь — живой дневник судьбы. По фото правой руки мы рассмотрим линии сердца, головы и жизни, холмы и общий рисунок, чтобы мягко подсветить твои таланты и текущие вызовы.\n\n"
             "Что нужно от тебя: одно чёткое фото ладони при хорошем светe.\n\n"
             "Что ты получишь: образный разбор на 3–5 абзацев + практические советы.\n\n"
             "Стоимость: *130 ⭐* (≈ 300 ₽)."
@@ -1497,8 +1544,8 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data == "natal":
         caption_natal = (
             "🌌 *Натальная карта Pro*\n\n"
-            "Твой личный небесный атлас: планеты, знаки, *дома* и ключевые *аспекты* + нумерологический штрих-код. Отдельно отмечу ресурсы, риски и мягкие рекомендации на ближайший цикл.\n\n"
-            "Что понадобится: дата, город и — по возможности — точное время рождения.\n"
+            "Твой личный небесный атлас: планеты, знаки, *дома* и ключевые *аспекты* + нумерологический штрих-код. Отдельно отметим ресурсы, риски и мягкие рекомендации на ближайший цикл.\n\n"
+            "Что понадобится: дата, город и, по возможности, точное время рождения.\n"
             "Отправка данных: *одним сообщением* в 4 строки — ФИО, дата, время (или «не знаю»), город и страна.\n\n"
             "Результат: структурированный текст 6–10 абзацев.\n\n"
             "Стоимость: *220 ⭐* (≈ 500 ₽)."
@@ -1705,12 +1752,12 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             ud["flow"] = None; ud["state"] = None
             await update.message.reply_text(
-                "Спасибо! Я записал данные для Наталки PRO:\n\n"
+                "Спасибо! Мы записали данные для вашей натальной карты:\n\n"
                 f"• ФИО: `{data['full_name']}`\n"
                 f"• Дата: `{data['natal_date']}`\n"
                 f"• Время: `{data['natal_time'] or 'неизвестно'}`\n"
                 f"• Город: `{data['natal_city']}`\n\n"
-                "Готовлю ваш разбор…",
+                "Готовим ваш разбор…",
                 parse_mode="Markdown",
             )
 
@@ -1784,7 +1831,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             ud["flow"] = None; ud["state"] = None
             await update.message.reply_text(
-                "Спасибо! Я записал данные для Наталки PRO:\n\n"
+                "Спасибо! Мы записали данные для вашей натальной карты:\n\n"
                 f"• Дата: *{ud.get('natal_date')}*\n"
                 f"• Время: *{ud.get('natal_time') or 'неизвестно'}*\n"
                 f"• Город: *{ud.get('natal_city')}*\n\n"
@@ -1946,6 +1993,7 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("orders_last", orders_last))
+    app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CallbackQueryHandler(on_menu))
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
