@@ -53,7 +53,7 @@ import os, json, sqlite3
 import asyncio
 import requests
 from html import escape
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, BotCommand, BotCommandScopeAllPrivateChats
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ContextTypes, PreCheckoutQueryHandler, MessageHandler, filters
@@ -683,6 +683,7 @@ def _split_html_for_telegram(html: str, limit: int = 3500) -> list[str]:
     return parts
 
 # --- Helper: quick "Back to menu" button ---
+
 BACK_MENU_KB = InlineKeyboardMarkup(
     [[InlineKeyboardButton("← В главное меню", callback_data="back_home")]]
 )
@@ -692,6 +693,22 @@ async def _send_back_menu(update: Update, text: str = "Можешь вернут
         await update.message.reply_text(text, reply_markup=BACK_MENU_KB)
     except Exception:
         await update.effective_chat.send_message(text, reply_markup=BACK_MENU_KB)
+
+
+# --- Helper to ensure bot menu commands are set ("/menu" etc) ---
+async def _ensure_bot_menu_commands(context: ContextTypes.DEFAULT_TYPE):
+    """Ensure system menu shows /menu (Главное меню). Safe to call multiple times."""
+    try:
+        await context.bot.set_my_commands(
+            [
+                BotCommand("menu", "Главное меню"),
+                BotCommand("start", "Запуск бота"),
+                BotCommand("cancel", "Отмена и в главное меню"),
+            ],
+            scope=BotCommandScopeAllPrivateChats(),
+        )
+    except Exception as e:
+        log.warning("set_my_commands failed: %s", e)
 
 
 def _render_report_html(report: dict) -> str:
@@ -1433,6 +1450,7 @@ MENU = [
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     upsert_profile(u.id, u.full_name or "", u.username or "", (u.language_code or ""))
+    await _ensure_bot_menu_commands(context)
     intro = (
         "✨ Добро пожаловать в *AstroMagic* ✨\n\n"
         "Мы — команда практикующих астрологов, нумерологов и исследователей эзотерики.\n"
@@ -1453,6 +1471,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     upsert_profile(u.id, u.full_name or "", u.username or "", (u.language_code or ""))
+    await _ensure_bot_menu_commands(context)
     intro = (
         "✨ Добро пожаловать в *AstroMagic* ✨\n\n"
         "Мы — команда практикующих астрологов, нумерологов и исследователей эзотерики.\n"
@@ -1474,6 +1493,7 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ud = context.user_data
     ud.clear()
+    await _ensure_bot_menu_commands(context)
 
     intro = (
         "✨ Добро пожаловать в *AstroMagic* ✨\n\n"
